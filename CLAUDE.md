@@ -22,7 +22,7 @@ Read the folder's own `CLAUDE.md` before changing code there. It holds the archi
 - **Vercel:** deploy as two projects, with Root Directory `app` and `curator`.
 - **Data:** vault data comes from the public Morpho GraphQL API (`https://api.morpho.org/graphql`). Only Morpho V2 vaults are supported.
 - **Before finishing a change:** run `npm run lint` and `npm run build` in each folder you touched.
-- **Upstream rules vs. this repo:** the subfolder docs came from the upstream repos. They say to read `TODO.md` first, keep `CLAUDE.md` and `AGENTS.md` in sync, and never push to `main`. In this student repo, follow the user's own git instructions. Leave the upstream `TODO.md` alone unless asked, since it belongs to upstream.
+- **Upstream rules vs. this repo:** the subfolder docs came from the upstream repos. They say to read `TODO.md` first, keep `CLAUDE.md` and `AGENTS.md` in sync, and never push to `main`. In this student repo, follow the user's own git instructions. Each folder's `TODO.md` is the student setup checklist (vaults, favicon, keys, Vercel), not upstream's task list, so don't sync it.
 - **Removed on purpose:** students don't get Muscadine's business-specific parts, so the student copies are trimmed. Missing items include curator auth, bots and gates routes, Muscadine's real vault and Safe addresses, and Muscadine's protocol stats and business info. The subfolder docs still describe some of these. Treat a missing file as intentional, check that a file exists before relying on it, and never re-add removed pieces, including when syncing from upstream.
 
 ## Upstream repos and last synced commits
@@ -39,6 +39,6 @@ The README has the same table. Update both together.
 For each folder (`app`, `curator`):
 
 1. Clone upstream outside this repo and run `git log <last-synced>..origin/main` and `git diff <last-synced>..origin/main`. If the commit is missing, run `git fetch --depth=1000 origin main`.
-2. Apply the changes by hand to the matching folder. Don't overwrite whole files, vault config (see `USER-GUIDE.md`), each folder's docs and `.env.example`, `app/src/app/contact`, or `app/src/app/curator`. Skip anything removed on purpose (see "Removed on purpose"), plus upstream-only files such as `.github`, `.cursor` and `.mcp.json`.
+2. Apply the changes by hand to the matching folder. Don't overwrite whole files, vault config (see `USER-GUIDE.md`), each folder's docs and `.env.example`, `app/src/app/contact`, or `app/src/app/curator`. Skip anything removed on purpose (see "Removed on purpose"), plus `.github`, which students don't have.
 3. Run `npm install` and `npm run build` in the folder.
 4. Update the SHA and date here and in `README.md`, then commit.

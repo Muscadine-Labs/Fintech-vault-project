@@ -12,3 +12,12 @@ Student repo for Morpho V2 vault front ends, plus folders for the bots and on-ch
 Each front end has its own `package.json`. Install and run them separately.
 
 Students change vault addresses, names, and types in two files, then deploy each front end on Vercel. See [USER-GUIDE.md](USER-GUIDE.md).
+
+## Upstream sync
+
+`app` and `curator` are copies of the Muscadine Labs repos, not exact mirrors. To pull in updates, ask your AI to follow [CLAUDE.md](CLAUDE.md).
+
+| Folder | Upstream | Last synced commit |
+| --- | --- | --- |
+| `app` | [Muscadine-Labs/app](https://github.com/Muscadine-Labs/app) `main` | `b2ed404` (2026-11-15) |
+| `curator` | [Muscadine-Labs/curator](https://github.com/Muscadine-Labs/curator) `main` | `99995fb` (2026-11-15) |

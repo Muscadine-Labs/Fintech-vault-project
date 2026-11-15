@@ -1,0 +1,53 @@
+/**
+ * Application-wide constants
+ */
+
+// Chain configuration
+export const BASE_CHAIN_ID = 8453 as const;
+export const BASE_CHAIN_NAME = 'Base';
+export function getChainDisplayName(chainId: number): string {
+  if (chainId === BASE_CHAIN_ID) return BASE_CHAIN_NAME;
+  return `Chain ${chainId}`;
+}
+/** Chain slug used in app.morpho.org URLs. */
+export const MORPHO_CHAIN_SLUG: Record<number, string> = {
+  [BASE_CHAIN_ID]: 'base',
+};
+export function getMorphoChainSlug(chainId: number): string {
+  return MORPHO_CHAIN_SLUG[chainId] ?? MORPHO_CHAIN_SLUG[BASE_CHAIN_ID];
+}
+
+export const BASE_WETH_ADDRESS = '0x4200000000000000000000000000000000000006' as const;
+
+/** Morpho Vault V2 `forceDeallocate` (cash force-withdraw; not in-kind). */
+export const MORPHO_FORCE_DEALLOCATE_DOCS_URL =
+  'https://docs.morpho.org/learn/concepts/vault-v2/#1-in-kind-redemptions-with-forcedeallocate' as const;
+/** Morpho protocol disclaimer (integrator UX requirement). */
+export const MORPHO_DISCLAIMER_URL = 'https://morpho.org/disclaimers' as const;
+
+// Transaction configuration
+/** Delay before follow-up balance refresh after tx (Morpho indexer lag). */
+export const POST_TX_BALANCE_REFRESH_DELAY_MS = 5000;
+
+// Morpho GraphQL API
+export const MORPHO_GRAPHQL_URL = 'https://api.morpho.org/graphql' as const;
+/** Next.js fetch revalidate for Morpho route handlers (seconds). */
+export const MORPHO_GRAPHQL_REVALIDATE_SECONDS = 60; // 60 seconds
+/** Browser `VaultDataContext` cache — matches server Morpho route revalidate. */
+export const CLIENT_VAULT_DATA_CACHE_MS = MORPHO_GRAPHQL_REVALIDATE_SECONDS * 1000;
+export const MORPHO_FETCH_TIMEOUT_MS = 10_000;
+export const MORPHO_MAX_RETRIES = 3;
+/** In-memory Morpho response cache TTL in `fetchMorphoGraphQL` (dev and production). */
+export const MORPHO_MEMORY_CACHE_MS = 60_000;
+/** Vault list preload concurrency — small batches avoid Morpho rate-limit bursts. */
+export const MORPHO_PRELOAD_BATCH_SIZE = 4;
+/** Back off failed Morpho fetches (rate limits, 5xx) before retrying the same vault. */
+export const MORPHO_FETCH_ERROR_COOLDOWN_MS = 60_000;
+
+// Asset fallbacks (Morpho activity amounts)
+export const STABLECOIN_SYMBOLS = ['USDC', 'USDT'] as const;
+export const DEFAULT_ASSET_PRICE = 1;
+export const DEFAULT_ASSET_DECIMALS = 18;
+
+/** Product name for the document title, Reown AppKit and WalletConnect. Change it to your project's name. */
+export const APP_NAME = 'Vaults';

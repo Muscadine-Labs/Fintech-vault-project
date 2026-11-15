@@ -1,0 +1,551 @@
+'use client';
+
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useAccount, useReadContract } from 'wagmi';
+import { formatUnits } from 'viem';
+import { useTransactionState } from '@/contexts/TransactionContext';
+import { useWallet } from '@/contexts/WalletContext';
+import { useVaultData } from '@/contexts/VaultDataContext';
+import { BASE_CHAIN_ID } from '@/lib/constants';
+import { usePrices } from '@/contexts/PriceContext';
+import { formatBigIntForInput } from '@/lib/formatter';
+import { ERC20_BALANCE_ABI, ERC4626_ABI } from '@/lib/abis';
+import { getAssetDecimalsForSymbol } from '@/lib/asset-decimals';
+import { parseTransactionAmount } from '@/lib/liquidity-utils';
+import {
+  accountsMatchTransactionTab,
+  getTokenBalanceRaw,
+  isWethVault,
+} from '@/lib/transaction-form-utils';
+import { useVaultDepositCapacity } from '@/hooks/useVaultDepositCapacity';
+import type { VaultAccount, WalletAccount } from '@/types/vault';
+
+export type VaultTransactionTab = 'deposit' | 'withdraw';
+
+interface UseScopedVaultTransactionOptions {
+  vaultAddress: string;
+  vaultName: string;
+  vaultSymbol: string;
+  isOpen: boolean;
+  initialTab: VaultTransactionTab;
+}
+
+function buildWalletAccount(symbol: string): WalletAccount {
+  return {
+    type: 'wallet',
+    address: 'wallet',
+    symbol,
+    balance: BigInt(0),
+  };
+}
+
+function buildVaultAccount(
+  vaultAddress: string,
+  vaultName: string,
+  vaultSymbol: string,
+  shares: string | undefined,
+  asset: { address: string; decimals: number } | null
+): VaultAccount {
+  let balance = BigInt(0);
+  if (shares) {
+    try {
+      const parsed = BigInt(shares);
+      if (parsed > BigInt(0)) balance = parsed;
+    } catch {
+      // ignore invalid share strings
+    }
+  }
+
+  return {
+    type: 'vault',
+    address: vaultAddress,
+    name: vaultName,
+    symbol: vaultSymbol,
+    balance,
+    // The vault's own asset, read on chain; the symbol default only until that read lands.
+    assetAddress: asset?.address ?? '',
+    assetDecimals: asset?.decimals ?? getAssetDecimalsForSymbol(vaultSymbol),
+  };
+}
+
+/** Opening the transact panel refreshes wallet data only when it is older than this. */
+const PANEL_REFRESH_MAX_AGE_MS = 60_000;
+
+export function useScopedVaultTransaction({
+  vaultAddress,
+  vaultName,
+  vaultSymbol,
+  isOpen,
+  initialTab,
+}: UseScopedVaultTransactionOptions) {
+  const { isConnected, address: walletAddress } = useAccount();
+  const { tokenBalances, morphoHoldings, refreshBalancesIfStale } = useWallet();
+  const { assetForVault } = usePrices();
+  const vaultAsset = assetForVault(vaultAddress);
+  const vaultAssetAddress = vaultAsset?.address ?? null;
+  const vaultAssetDecimals = vaultAsset?.decimals ?? null;
+  const { fetchVaultData } = useVaultData();
+  const {
+    fromAccount,
+    toAccount,
+    amount,
+    status,
+    derivedAsset,
+    setFromAccount,
+    setToAccount,
+    setAmount,
+    setStatus,
+    reset,
+    pendingTx,
+  } = useTransactionState();
+
+  const [activeTab, setActiveTab] = useState<VaultTransactionTab>(initialTab);
+  /** Amount the Deposit click lowered to the cap. Cleared once the user edits the amount. */
+  const [depositCapAppliedRaw, setDepositCapAppliedRaw] = useState<bigint | null>(null);
+  const [isCheckingDepositCap, setIsCheckingDepositCap] = useState(false);
+  const initializedRef = useRef(false);
+  const vaultKeyRef = useRef(vaultAddress);
+
+  const vaultPosition = useMemo(
+    () =>
+      morphoHoldings.positions.find(
+        (pos) => pos.vault.address.toLowerCase() === vaultAddress.toLowerCase()
+      ) ?? null,
+    [morphoHoldings.positions, vaultAddress]
+  );
+
+  // Share balance read on chain, so a withdraw still works when the Morpho positions API
+  // fails or has not indexed this vault yet. Falls back to the API value while it loads.
+  const { data: onChainShares, refetch: refetchOnChainShares } = useReadContract({
+    address: walletAddress ? (vaultAddress as `0x${string}`) : undefined,
+    chainId: BASE_CHAIN_ID,
+    abi: ERC20_BALANCE_ABI,
+    functionName: 'balanceOf',
+    args: walletAddress ? [walletAddress] : undefined,
+    query: { enabled: !!walletAddress },
+  });
+  // The wallet's balance of the vault asset, read on chain: deposits never size off an API.
+  // The vault's own `asset()`, read on chain, so any token the registry uses works here.
+  const assetTokenAddress = vaultAsset?.address;
+  const { data: onChainAssetBalance, refetch: refetchOnChainAssetBalance } = useReadContract({
+    address: walletAddress && assetTokenAddress ? (assetTokenAddress as `0x${string}`) : undefined,
+    chainId: BASE_CHAIN_ID,
+    abi: ERC20_BALANCE_ABI,
+    functionName: 'balanceOf',
+    args: walletAddress ? [walletAddress] : undefined,
+    query: { enabled: !!walletAddress && !!assetTokenAddress },
+  });
+
+  // Re-read both after every positions refresh (the app refreshes after each transaction).
+  useEffect(() => {
+    if (!walletAddress) return;
+    void refetchOnChainShares();
+    void refetchOnChainAssetBalance();
+  }, [walletAddress, morphoHoldings.positions, refetchOnChainShares, refetchOnChainAssetBalance]);
+
+  const vaultShareBalance =
+    onChainShares !== undefined ? onChainShares.toString() : vaultPosition?.shares ?? null;
+
+  const vaultShareBalanceBn = useMemo((): bigint | null => {
+    if (!vaultShareBalance) return null;
+    try {
+      return BigInt(vaultShareBalance);
+    } catch {
+      return null;
+    }
+  }, [vaultShareBalance]);
+
+  const vaultAccount = useMemo(
+    () =>
+      buildVaultAccount(
+        vaultAddress,
+        vaultName,
+        vaultSymbol,
+        vaultShareBalance ?? undefined,
+        vaultAssetAddress && vaultAssetDecimals !== null
+          ? { address: vaultAssetAddress, decimals: vaultAssetDecimals }
+          : null
+      ),
+    [vaultAddress, vaultName, vaultSymbol, vaultShareBalance, vaultAssetAddress, vaultAssetDecimals]
+  );
+
+  const walletAccount = useMemo(
+    () => buildWalletAccount(vaultSymbol),
+    [vaultSymbol]
+  );
+
+  const effectiveActiveTab = useMemo((): VaultTransactionTab => {
+    if (status === 'idle' && fromAccount && toAccount) {
+      if (fromAccount.type === 'wallet' && toAccount.type === 'vault') return 'deposit';
+      if (fromAccount.type === 'vault' && toAccount.type === 'wallet') return 'withdraw';
+    }
+    return activeTab;
+  }, [status, fromAccount, toAccount, activeTab]);
+
+  const { capRaw: depositCapRaw, readCapForSubmit } = useVaultDepositCapacity(
+    vaultAddress,
+    isOpen && effectiveActiveTab === 'deposit'
+  );
+
+  const applyTabAccounts = useCallback(
+    (tab: VaultTransactionTab) => {
+      if (tab === 'deposit') {
+        setFromAccount(walletAccount);
+        setToAccount(vaultAccount);
+      } else {
+        setFromAccount(vaultAccount);
+        setToAccount(walletAccount);
+      }
+    },
+    [
+      vaultAccount,
+      walletAccount,
+      setFromAccount,
+      setToAccount,
+    ]
+  );
+
+  // The asset read can land after the panel set its accounts (a token with no built-in
+  // decimals). While the form is idle, swap in the account with the real decimals.
+  useEffect(() => {
+    if (!isOpen || status !== 'idle' || vaultAssetDecimals === null) return;
+    const current =
+      fromAccount?.type === 'vault' ? fromAccount : toAccount?.type === 'vault' ? toAccount : null;
+    if (!current || current.address.toLowerCase() !== vaultAddress.toLowerCase()) return;
+    if ((current as VaultAccount).assetDecimals === vaultAssetDecimals) return;
+    applyTabAccounts(fromAccount?.type === 'vault' ? 'withdraw' : 'deposit');
+  }, [isOpen, status, vaultAssetDecimals, fromAccount, toAccount, vaultAddress, applyTabAccounts]);
+
+  useEffect(() => {
+    if (vaultKeyRef.current !== vaultAddress) {
+      vaultKeyRef.current = vaultAddress;
+      initializedRef.current = false;
+    }
+  }, [vaultAddress]);
+
+  useEffect(() => {
+    if (!isOpen) {
+      initializedRef.current = false;
+      return;
+    }
+
+    if (initializedRef.current) return;
+    initializedRef.current = true;
+
+    const contextVaultAddress =
+      fromAccount?.type === 'vault'
+        ? fromAccount.address
+        : toAccount?.type === 'vault'
+          ? toAccount.address
+          : null;
+    const sameVault =
+      Boolean(contextVaultAddress) &&
+      contextVaultAddress!.toLowerCase() === vaultAddress.toLowerCase();
+    const inFlight =
+      status !== 'idle' && status !== 'success' && status !== 'error';
+
+    // Keep an in-flight review only when it already targets this vault.
+    if (inFlight && sameVault) return;
+
+    reset();
+    setAmount('');
+    applyTabAccounts(initialTab);
+
+    if (isConnected) {
+      // The wallet and vault data usually just loaded (page load or a recent visit). Amounts in
+      // the form are read on chain anyway, so only refresh data that is actually stale.
+      void refreshBalancesIfStale(PANEL_REFRESH_MAX_AGE_MS);
+      fetchVaultData(vaultAddress, BASE_CHAIN_ID);
+    }
+  }, [
+    isOpen,
+    initialTab,
+    vaultAddress,
+    isConnected,
+    status,
+    fromAccount,
+    toAccount,
+    reset,
+    setAmount,
+    applyTabAccounts,
+    refreshBalancesIfStale,
+    fetchVaultData,
+  ]);
+
+  const handleTabChange = useCallback(
+    (tab: VaultTransactionTab) => {
+      if (status !== 'idle') return;
+      if (
+        tab === activeTab &&
+        accountsMatchTransactionTab(tab, fromAccount, toAccount)
+      ) {
+        return;
+      }
+      setActiveTab(tab);
+      setAmount('');
+      setDepositCapAppliedRaw(null);
+      applyTabAccounts(tab);
+    },
+    [
+      status,
+      activeTab,
+      fromAccount,
+      toAccount,
+      setAmount,
+      applyTabAccounts,
+    ]
+  );
+
+  const { data: exactAssetAmount, isPending: isExactAssetAmountPending } = useReadContract({
+    address:
+      effectiveActiveTab === 'withdraw' && vaultShareBalanceBn !== null
+        ? (vaultAddress as `0x${string}`)
+        : undefined,
+    chainId: BASE_CHAIN_ID,
+    abi: ERC4626_ABI,
+    functionName: 'convertToAssets',
+    args: vaultShareBalanceBn !== null ? [vaultShareBalanceBn] : undefined,
+    query: {
+      enabled:
+        isOpen &&
+        effectiveActiveTab === 'withdraw' &&
+        vaultShareBalanceBn !== null &&
+        vaultShareBalanceBn > BigInt(0),
+    },
+  });
+
+  const isWithdrawMaxLoading = useMemo(() => {
+    if (effectiveActiveTab !== 'withdraw') return false;
+    if (vaultShareBalanceBn === null || vaultShareBalanceBn === BigInt(0)) return false;
+    return exactAssetAmount === undefined && isExactAssetAmountPending;
+  }, [
+    effectiveActiveTab,
+    vaultShareBalanceBn,
+    exactAssetAmount,
+    isExactAssetAmountPending,
+  ]);
+
+  const maxAmountRaw = useMemo((): bigint | null => {
+    if (!derivedAsset) return null;
+
+    if (effectiveActiveTab === 'deposit') {
+      if (onChainAssetBalance !== undefined) return onChainAssetBalance;
+      // Only while the on-chain read loads (or for an asset without a known token address).
+      if (isWethVault(vaultAddress, vaultSymbol) || derivedAsset.symbol === 'WETH') {
+        return getTokenBalanceRaw('WETH', tokenBalances);
+      }
+      return getTokenBalanceRaw(derivedAsset.symbol, tokenBalances);
+    }
+
+    if (vaultShareBalanceBn === null || vaultShareBalanceBn === BigInt(0)) {
+      return BigInt(0);
+    }
+    if (exactAssetAmount !== undefined) return exactAssetAmount;
+    if (isExactAssetAmountPending) return null;
+    return BigInt(0);
+  }, [
+    derivedAsset,
+    effectiveActiveTab,
+    vaultAddress,
+    vaultSymbol,
+    tokenBalances,
+    onChainAssetBalance,
+    vaultShareBalanceBn,
+    exactAssetAmount,
+    isExactAssetAmountPending,
+  ]);
+
+  const maxAmount = useMemo((): number | null => {
+    if (maxAmountRaw === null || !derivedAsset) return null;
+    // Same decimals as the input parse, balance check and send (`derivedAsset`).
+    return parseFloat(formatUnits(maxAmountRaw, derivedAsset.decimals));
+  }, [maxAmountRaw, derivedAsset]);
+
+  /** MAX fills the wallet balance, or the vault's deposit cap when that is lower. */
+  const maxInputRaw = useMemo((): bigint | null => {
+    if (maxAmountRaw === null) return null;
+    if (effectiveActiveTab !== 'deposit' || depositCapRaw === null) return maxAmountRaw;
+    return depositCapRaw < maxAmountRaw ? depositCapRaw : maxAmountRaw;
+  }, [maxAmountRaw, effectiveActiveTab, depositCapRaw]);
+
+  const calculateMaxAmount = useCallback(() => {
+    setDepositCapAppliedRaw(null);
+    if (maxInputRaw === null) {
+      setAmount('0');
+      return;
+    }
+    if (maxInputRaw === BigInt(0)) {
+      setAmount('0');
+      return;
+    }
+
+    const decimals = derivedAsset?.decimals ?? getAssetDecimalsForSymbol(vaultSymbol);
+    setAmount(formatBigIntForInput(maxInputRaw, decimals));
+  }, [
+    maxInputRaw,
+    derivedAsset,
+    vaultSymbol,
+    setAmount,
+  ]);
+
+  const handleAmountChange = useCallback(
+    (value: string) => {
+      if (value === '') {
+        setDepositCapAppliedRaw(null);
+        setAmount('');
+        return;
+      }
+      if (!/^\d*\.?\d*$/.test(value)) return;
+      setDepositCapAppliedRaw(null);
+      const decimals = derivedAsset?.decimals ?? getAssetDecimalsForSymbol(vaultSymbol);
+      const dot = value.indexOf('.');
+      if (dot >= 0 && value.length - dot - 1 > decimals) {
+        setAmount(value.slice(0, dot + 1 + decimals));
+        return;
+      }
+      setAmount(value);
+    },
+    [setAmount, derivedAsset?.decimals, vaultSymbol]
+  );
+
+  const exceedsBalance = useMemo(() => {
+    if (!amount || !derivedAsset || maxAmountRaw === null) return false;
+    const entered = parseTransactionAmount(amount.replace(/\.$/, ''), derivedAsset.decimals);
+    if (entered <= BigInt(0)) return false;
+    return entered > maxAmountRaw;
+  }, [amount, derivedAsset, maxAmountRaw]);
+
+  const hasValidAmount = useMemo(() => {
+    const parsed = Number.parseFloat(amount);
+    return Number.isFinite(parsed) && parsed > 0;
+  }, [amount]);
+
+  const isDepositTab = effectiveActiveTab === 'deposit';
+  const depositCapFull = isDepositTab && depositCapRaw === BigInt(0);
+
+  const exceedsDepositCap = useMemo(() => {
+    if (!isDepositTab || depositCapRaw === null || exceedsBalance) return false;
+    if (!amount || !derivedAsset) return false;
+    const entered = parseTransactionAmount(amount.replace(/\.$/, ''), derivedAsset.decimals);
+    return entered > depositCapRaw;
+  }, [isDepositTab, depositCapRaw, exceedsBalance, amount, derivedAsset]);
+
+  const depositCapApplied = useMemo(() => {
+    if (!isDepositTab || depositCapAppliedRaw === null || !derivedAsset) return null;
+    const entered = parseTransactionAmount(amount.replace(/\.$/, ''), derivedAsset.decimals);
+    return entered === depositCapAppliedRaw ? depositCapAppliedRaw : null;
+  }, [isDepositTab, depositCapAppliedRaw, derivedAsset, amount]);
+
+  const blockContinueForBalance = exceedsBalance;
+
+  const handleStartTransaction = useCallback(async () => {
+    if (!fromAccount || !toAccount || !derivedAsset || !hasValidAmount || exceedsBalance) return;
+
+    if (isDepositTab) {
+      setIsCheckingDepositCap(true);
+      let freshCapRaw: bigint | null;
+      try {
+        freshCapRaw = await readCapForSubmit();
+      } finally {
+        setIsCheckingDepositCap(false);
+      }
+
+      if (freshCapRaw !== null) {
+        if (freshCapRaw === BigInt(0)) return;
+        const entered = parseTransactionAmount(amount.replace(/\.$/, ''), derivedAsset.decimals);
+        if (entered > freshCapRaw) {
+          setAmount(formatBigIntForInput(freshCapRaw, derivedAsset.decimals));
+          setDepositCapAppliedRaw(freshCapRaw);
+          return;
+        }
+      }
+    }
+
+    setStatus('preview');
+  }, [
+    fromAccount,
+    toAccount,
+    derivedAsset,
+    hasValidAmount,
+    exceedsBalance,
+    isDepositTab,
+    readCapForSubmit,
+    amount,
+    setAmount,
+    setStatus,
+  ]);
+
+  const handleResetToIdle = useCallback(() => {
+    reset();
+    setAmount('');
+    setDepositCapAppliedRaw(null);
+    applyTabAccounts(activeTab);
+  }, [reset, setAmount, activeTab, applyTabAccounts]);
+
+  const handleReturnToIdle = useCallback(() => {
+    setStatus('idle');
+  }, [setStatus]);
+
+  const getProgressSteps = useCallback(() => {
+    const baseSteps = [
+      { label: 'Amount', completed: false, active: false },
+      { label: 'Review', completed: false, active: false },
+      { label: 'Confirmation', completed: false, active: false },
+    ];
+
+    if (status === 'success') {
+      return baseSteps.map((step) => ({ ...step, completed: true }));
+    }
+    if (status === 'preview') {
+      return [
+        { ...baseSteps[0], completed: true },
+        { ...baseSteps[1], active: true },
+        baseSteps[2],
+      ];
+    }
+    if (status === 'signing' || status === 'approving' || status === 'confirming') {
+      return [
+        { ...baseSteps[0], completed: true },
+        { ...baseSteps[1], active: true },
+        baseSteps[2],
+      ];
+    }
+    return [{ ...baseSteps[0], active: true }, baseSteps[1], baseSteps[2]];
+  }, [status]);
+
+  // A transaction still pending on chain keeps the review open: closing it would reset the
+  // form and allow sending the same deposit or withdraw again.
+  const canClose =
+    !pendingTx && (status === 'idle' || status === 'success' || status === 'error');
+
+  return {
+    isConnected,
+    activeTab,
+    effectiveActiveTab,
+    handleTabChange,
+    amount,
+    handleAmountChange,
+    calculateMaxAmount,
+    maxAmount,
+    handleStartTransaction,
+    hasValidAmount,
+    exceedsBalance,
+    blockContinueForBalance,
+    depositCapRaw: isDepositTab ? depositCapRaw : null,
+    depositCapFull,
+    exceedsDepositCap,
+    depositCapAppliedRaw: depositCapApplied,
+    isCheckingDepositCap,
+    derivedAsset,
+    fromAccount,
+    toAccount,
+    status,
+    getProgressSteps,
+    handleResetToIdle,
+    handleReturnToIdle,
+    canClose,
+    isWithdrawMaxLoading,
+    vaultAddress,
+    vaultSymbol,
+  };
+}

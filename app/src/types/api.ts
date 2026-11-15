@@ -1,0 +1,62 @@
+// API Response Types
+
+export interface GraphQLError {
+  message: string;
+  status?: string;
+  extensions?: Record<string, unknown>;
+}
+
+export interface GraphQLResponse<T> {
+  data?: T;
+  errors?: GraphQLError[];
+}
+
+// Transaction Types
+export type TransactionType =
+  | 'deposit'
+  | 'withdraw'
+  | 'transfer_in'
+  | 'transfer_out'
+  | 'transfer'
+  | 'event';
+
+export interface Transaction {
+  id: string;
+  type: TransactionType;
+  timestamp: number;
+  blockNumber?: number;
+  transactionHash?: string;
+  user?: string;
+  assets?: string;
+  shares?: string;
+  assetsUsd?: number;
+}
+
+export interface GraphQLTransactionsData {
+  vaultV2transactions?: {
+    items: GraphQLV2TransactionItem[];
+  };
+}
+
+// V2 Transaction Item
+export interface GraphQLV2TransactionItem {
+  txHash: string;
+  timestamp: number;
+  type: string;
+  blockNumber?: number;
+  txIndex?: number;
+  logIndex?: number | null;
+  vault?: {
+    address: string;
+  };
+  shares?: string;
+  data?: {
+    __typename?: string;
+    assets?: number;
+    sender?: string;
+    onBehalf?: string;
+    receiver?: string;
+    from?: string;
+    to?: string;
+  };
+}

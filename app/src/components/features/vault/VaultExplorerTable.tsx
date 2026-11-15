@@ -1,0 +1,1028 @@
+'use client';
+
+import { useMemo, type KeyboardEvent, type ReactNode } from 'react';
+import { useTokenLogo } from '@/contexts/PriceContext';
+import Image from 'next/image';
+import { useRouter } from 'next/navigation';
+import { useAccount } from 'wagmi';
+import { Vault } from '@/types/vault';
+import type { MorphoVaultData } from '@/types/vault';
+import { useVaultData } from '@/contexts/VaultDataContext';
+import { useWallet } from '@/contexts/WalletContext';
+import { VaultName } from '@/components/features/vault/VaultName';
+import {
+  getVaultRoute,
+  preferredVaultName,
+  hasOnChainVaultShares,
+  isCuratedVaultAddress,
+  resolvePositionAssetsUsd,
+} from '@/lib/vault-utils';
+import {
+  formatDashboardTokenAmount,
+  formatNumber,
+  formatPercentage,
+  formatPositionTokenAmount,
+  formatPositionUsd,
+  formatSmartCurrency,
+  getDisplayFractionDigits,
+} from '@/lib/formatter';
+import { formatUnits } from 'viem';
+import { Skeleton } from '@/components/ui/Skeleton';
+import { useIsClient } from '@/hooks/useClientOnly';
+import { useVaultEarnedInterest } from '@/hooks/useVaultEarnedInterest';
+import { resolveAssetDecimals } from '@/lib/asset-decimals';
+import {
+  resolveTotalUnderlyingLiquidityAssets,
+  resolveTotalUnderlyingLiquidityUsd,
+} from '@/lib/liquidity-utils';
+
+function handleRowKeyDown(event: KeyboardEvent, onActivate: () => void) {
+  if (event.key === 'Enter' || event.key === ' ') {
+    event.preventDefault();
+    onActivate();
+  }
+}
+
+function VaultShareLabel({ vault }: { vault: Vault }) {
+  return (
+    <span className="block text-[10px] text-[var(--foreground-muted)]">
+      {vault.vaultSymbol || vault.symbol}
+    </span>
+  );
+}
+
+/** Dashboard value cell: one-line amount over one-line USD, same size in every column. */
+function DashboardStackedValue({
+  primary,
+  secondary,
+  title,
+  align = 'end',
+  primaryClassName = 'font-medium text-[var(--foreground)]',
+}: {
+  primary: ReactNode;
+  secondary: ReactNode;
+  title?: string;
+  align?: 'start' | 'end';
+  primaryClassName?: string;
+}) {
+  return (
+    <div
+      title={title}
+      className={`flex min-w-0 flex-col gap-0.5 ${
+        align === 'end' ? 'items-end text-right' : 'items-start text-left'
+      }`}
+    >
+      <span className={`max-w-full truncate whitespace-nowrap text-sm tabular-nums ${primaryClassName}`}>
+        {primary}
+      </span>
+      <span className="max-w-full truncate whitespace-nowrap text-xs tabular-nums text-[var(--foreground-secondary)]">
+        {secondary}
+      </span>
+    </div>
+  );
+}
+
+function DashboardTokenValue({
+  rawValue,
+  decimals,
+  symbol,
+  usd,
+  align,
+}: {
+  rawValue: string | undefined;
+  decimals: number;
+  symbol: string;
+  usd: number;
+  align?: 'start' | 'end';
+}) {
+  return (
+    <DashboardStackedValue
+      align={align}
+      title={formatPositionTokenAmount(rawValue ?? '0', decimals, symbol)}
+      primary={formatDashboardTokenAmount(rawValue, decimals, symbol)}
+      secondary={formatPositionUsd(usd)}
+    />
+  );
+}
+
+function DashboardApyTvlValue({
+  vaultData,
+  align,
+}: {
+  vaultData: MorphoVaultData;
+  align?: 'start' | 'end';
+}) {
+  return (
+    <DashboardStackedValue
+      align={align}
+      primaryClassName="font-semibold text-[var(--primary)]"
+      primary={`${formatPercentage(vaultData.apy)} APY`}
+      secondary={`${formatSmartCurrency(vaultData.totalValueLocked || 0, { alwaysTwoDecimals: true })} TVL`}
+    />
+  );
+}
+
+function formatCompactTokenAmount(rawValue: string | undefined, decimals: number, symbol: string): string {
+  const zeroLabel = formatPositionTokenAmount('0', decimals, symbol);
+  if (!rawValue) return zeroLabel;
+
+  let value: number;
+  try {
+    value = Number(formatUnits(BigInt(rawValue), decimals));
+  } catch {
+    return zeroLabel;
+  }
+
+  if (!Number.isFinite(value) || value === 0) return zeroLabel;
+
+  const absValue = Math.abs(value);
+  let formatted: string;
+
+  if (absValue >= 1_000_000_000) {
+    formatted = `${formatNumber(value / 1_000_000_000, { maximumFractionDigits: 2 })}B`;
+  } else if (absValue >= 1_000_000) {
+    formatted = `${formatNumber(value / 1_000_000, { maximumFractionDigits: 2 })}M`;
+  } else if (absValue >= 1_000) {
+    formatted = `${formatNumber(value / 1_000, { maximumFractionDigits: 2 })}K`;
+  } else {
+    const fractionDigits = getDisplayFractionDigits(symbol);
+    formatted = formatNumber(value, {
+      minimumFractionDigits: 0,
+      maximumFractionDigits: Math.min(fractionDigits, 20),
+    });
+  }
+
+  return `${formatted} ${symbol}`;
+}
+
+function VaultLogo({ vault, size = 32 }: { vault: Vault; size?: number }) {
+  const logo = useTokenLogo(vault.symbol);
+  return (
+    <div
+      className="flex-shrink-0 rounded-full flex items-center justify-center overflow-hidden bg-white"
+      style={{ width: size, height: size }}
+    >
+      <Image
+        src={logo}
+        alt={`${vault.symbol} logo`}
+        width={size}
+        height={size}
+        className="object-contain"
+        style={{ width: '100%', height: '100%' }}
+      />
+    </div>
+  );
+}
+
+function MobileStatBlock({
+  label,
+  children,
+}: {
+  label: string;
+  children: ReactNode;
+}) {
+  return (
+    <div className="flex flex-col gap-1 min-w-0">
+      <span className="text-[10px] font-medium uppercase tracking-wide text-[var(--foreground-muted)]">
+        {label}
+      </span>
+      {children}
+    </div>
+  );
+}
+
+function flooredPnlRaw(raw: string | undefined): string | undefined {
+  if (raw === undefined) return undefined;
+  try {
+    const value = BigInt(raw);
+    return value > BigInt(0) ? value.toString() : '0';
+  } catch {
+    return '0';
+  }
+}
+
+function EarnedInterestCell({
+  vault,
+  decimals,
+  align = 'end',
+}: {
+  vault: Vault;
+  decimals: number;
+  align?: 'start' | 'end';
+}) {
+  const { address } = useAccount();
+  const { morphoHoldings } = useWallet();
+
+  const walletPosition = useMemo(
+    () =>
+      morphoHoldings.positions.find(
+        (position) => position.vault.address.toLowerCase() === vault.address.toLowerCase()
+      ) ?? null,
+    [morphoHoldings.positions, vault.address]
+  );
+
+  const resolvedDecimals = resolveAssetDecimals(
+    vault.symbol,
+    decimals ?? walletPosition?.assetDecimals
+  );
+
+  const hasWalletPosition = walletPosition && hasOnChainVaultShares(walletPosition);
+
+  const hookData = useVaultEarnedInterest(
+    address && hasWalletPosition && walletPosition?.pnlRaw === undefined
+      ? vault.address
+      : undefined,
+    vault.symbol,
+    walletPosition?.assets
+  );
+
+  if (!address) {
+    return <span className="text-sm text-[var(--foreground-muted)]">-</span>;
+  }
+
+  const skeletonClass = align === 'start' ? '' : 'ml-auto';
+  const zeroValue = (
+    <DashboardTokenValue
+      rawValue="0"
+      decimals={resolvedDecimals}
+      symbol={vault.symbol}
+      usd={0}
+      align={align}
+    />
+  );
+
+  if (morphoHoldings.isLoading) {
+    return <Skeleton width="4rem" height="1rem" className={skeletonClass} />;
+  }
+
+  if (!hasWalletPosition) return zeroValue;
+
+  // The read failed: unknown, not zero.
+  if (walletPosition.pnlRaw === undefined && hookData.error) {
+    return (
+      <span
+        className="text-sm text-[var(--foreground-muted)]"
+        title="Earned interest could not be loaded right now"
+      >
+        -
+      </span>
+    );
+  }
+
+  const ownRaw =
+    walletPosition.pnlRaw ??
+    (hookData.isLoading ? undefined : hookData.earnedInterestRaw || '0');
+  const ownUsd =
+    walletPosition.pnlUsd ??
+    (hookData.isLoading ? undefined : hookData.earnedInterestUsd);
+  const earnedInterestRaw = flooredPnlRaw(ownRaw);
+  const earnedInterestUsd = ownUsd === undefined ? undefined : Math.max(0, ownUsd);
+
+  if (earnedInterestRaw === undefined || earnedInterestUsd === undefined) {
+    return <Skeleton width="4rem" height="1rem" className={skeletonClass} />;
+  }
+
+  const earnedRawBigInt = (() => {
+    try {
+      return BigInt(earnedInterestRaw || '0');
+    } catch {
+      return BigInt(0);
+    }
+  })();
+
+  if (earnedRawBigInt <= BigInt(0) && earnedInterestUsd <= 0) return zeroValue;
+
+  return (
+    <DashboardTokenValue
+      rawValue={earnedInterestRaw}
+      decimals={resolvedDecimals}
+      symbol={vault.symbol}
+      usd={earnedInterestUsd}
+      align={align}
+    />
+  );
+}
+
+function VaultExplorerMobileCard({
+  vault,
+  showYourPosition,
+}: VaultExplorerRowProps) {
+  const router = useRouter();
+  const { getVaultData, isLoading } = useVaultData();
+  const vaultData = getVaultData(vault.address);
+  const loading = isLoading(vault.address);
+  const decimals = resolveAssetDecimals(vault.symbol, vaultData?.assetDecimals);
+  const isCurated = isCuratedVaultAddress(vault.address);
+  const openVault = () => {
+    if (!isCurated) return;
+    router.push(getVaultRoute(vault.address));
+  };
+  const rowProps = isCurated
+    ? {
+        role: 'button' as const,
+        tabIndex: 0,
+        onClick: openVault,
+        onKeyDown: (event: KeyboardEvent) => handleRowKeyDown(event, openVault),
+        className: 'w-full text-left px-4 py-4 border-b border-[var(--border)] hover:bg-[var(--surface-hover)] active:bg-[var(--surface-hover)] transition-colors touch-manipulation cursor-pointer',
+      }
+    : {
+        className: 'w-full text-left px-4 py-4 border-b border-[var(--border)]',
+      };
+
+  return (
+    <div {...rowProps}>
+      <div className="flex items-start gap-3 mb-3">
+        <VaultLogo vault={vault} />
+        <div className="min-w-0 flex-1">
+          <div className="flex items-center gap-2 flex-wrap min-w-0">
+            <VaultName name={preferredVaultName(vaultData?.name, vault.name, vault.address)} />
+            <span className="inline-flex rounded-md bg-[var(--surface-elevated)] px-2 py-0.5 text-[10px] font-medium text-[var(--foreground-secondary)]">
+              Base
+            </span>
+            {!isCurated ? (
+              <span className="inline-flex rounded-md bg-[var(--surface-elevated)] px-2 py-0.5 text-[10px] font-medium text-[var(--foreground-muted)]">
+                External
+              </span>
+            ) : null}
+          </div>
+          <VaultShareLabel vault={vault} />
+        </div>
+        <div className="shrink-0 text-right">
+          {loading || !vaultData ? (
+            <Skeleton width="3rem" height="1rem" />
+          ) : (
+            <span className="text-sm font-semibold text-[var(--primary)]">
+              {formatPercentage(vaultData.apy)}
+            </span>
+          )}
+        </div>
+      </div>
+
+      <div className={`grid gap-3 ${showYourPosition ? 'grid-cols-2' : 'grid-cols-2'}`}>
+        {showYourPosition && (
+          <MobileStatBlock label="Your Position">
+            <PositionCell vault={vault} loading={loading} align="start" />
+          </MobileStatBlock>
+        )}
+        <MobileStatBlock label="Deposits">
+          <ValueCell
+            rawValue={vaultData?.totalAssets}
+            usdValue={vaultData?.totalDeposits}
+            decimals={decimals}
+            symbol={vault.symbol}
+            loading={loading}
+            align="start"
+          />
+        </MobileStatBlock>
+        <MobileStatBlock label="Liquidity">
+          <ValueCell
+            rawValue={resolveTotalUnderlyingLiquidityAssets(
+              vaultData?.liquidityBreakdown,
+              vaultData?.liquidityAssets ?? vaultData?.totalAssets
+            )}
+            usdValue={resolveTotalUnderlyingLiquidityUsd(
+              vaultData?.liquidityBreakdown,
+              vaultData?.currentLiquidity
+            )}
+            decimals={decimals}
+            symbol={vault.symbol}
+            loading={loading}
+            align="start"
+          />
+        </MobileStatBlock>
+      </div>
+    </div>
+  );
+}
+
+function DashboardVaultMobileCard({
+  vault,
+  positionAssets,
+  positionUsd,
+  loading,
+  vaultData,
+  showCuratedLabel = false,
+}: {
+  vault: Vault;
+  /** Label registry vaults "Whitelisted" only when the list also has an external vault. */
+  showCuratedLabel?: boolean;
+  positionAssets?: string;
+  positionUsd: number;
+  loading: boolean;
+  vaultData: MorphoVaultData | null;
+}) {
+  const router = useRouter();
+  const { address } = useAccount();
+  const { morphoHoldings } = useWallet();
+  const decimals = resolveAssetDecimals(vault.symbol, vaultData?.assetDecimals);
+  const isCurated = isCuratedVaultAddress(vault.address);
+  const openVault = () => {
+    if (!isCurated) return;
+    router.push(getVaultRoute(vault.address));
+  };
+  const rowProps = isCurated
+    ? {
+        role: 'button' as const,
+        tabIndex: 0,
+        onClick: openVault,
+        onKeyDown: (event: KeyboardEvent) => handleRowKeyDown(event, openVault),
+        className: 'w-full text-left px-3 py-3 border-b border-[var(--border)] hover:bg-[var(--surface-hover)] active:bg-[var(--surface-hover)] transition-colors touch-manipulation cursor-pointer',
+      }
+    : {
+        className: 'w-full text-left px-3 py-3 border-b border-[var(--border)]',
+      };
+
+  return (
+    <div {...rowProps}>
+      <div className="flex items-start gap-2.5 mb-2">
+        <VaultLogo vault={vault} />
+        <div className="min-w-0 flex-1">
+          <VaultName name={preferredVaultName(vaultData?.name, vault.name, vault.address)} lines={2} />
+          <VaultShareLabel vault={vault} />
+          {!isCurated || showCuratedLabel ? (
+            <span className="text-[10px] text-[var(--foreground-muted)] block">
+              {isCurated ? 'Whitelisted' : 'External'}
+            </span>
+          ) : null}
+        </div>
+      </div>
+
+      <div className="grid grid-cols-3 gap-2">
+        <MobileStatBlock label="Your Position">
+          {!address || morphoHoldings.isLoading ? (
+            <Skeleton width="5rem" height="1rem" />
+          ) : hasOnChainVaultShares(
+              morphoHoldings.positions.find(
+                (item) => item.vault.address.toLowerCase() === vault.address.toLowerCase()
+              )
+            ) ? (
+            <DashboardTokenValue
+              rawValue={positionAssets}
+              decimals={decimals}
+              symbol={vault.symbol}
+              usd={positionUsd}
+              align="start"
+            />
+          ) : (
+            <span className="text-sm text-[var(--foreground-muted)]">-</span>
+          )}
+        </MobileStatBlock>
+        <MobileStatBlock label="Earned Interest">
+          <EarnedInterestCell vault={vault} decimals={decimals} align="start" />
+        </MobileStatBlock>
+        <MobileStatBlock label="APY / TVL">
+          {loading || !vaultData ? (
+            <Skeleton width="4rem" height="1rem" />
+          ) : (
+            <DashboardApyTvlValue vaultData={vaultData} align="start" />
+          )}
+        </MobileStatBlock>
+      </div>
+    </div>
+  );
+}
+
+function ValueCell({
+  rawValue,
+  usdValue,
+  decimals,
+  symbol,
+  loading,
+  align = 'end',
+}: {
+  rawValue?: string;
+  usdValue?: number;
+  decimals: number;
+  symbol: string;
+  loading: boolean;
+  align?: 'start' | 'end';
+}) {
+  const alignClass = align === 'start' ? 'items-start' : 'items-end';
+
+  if (loading) {
+    return (
+      <div className={`flex flex-col ${alignClass} gap-1.5`}>
+        <Skeleton width="5rem" height="1rem" />
+        <Skeleton width="4rem" height="0.875rem" />
+      </div>
+    );
+  }
+
+  return (
+    <div className={`flex flex-col ${alignClass} gap-1`}>
+      <span className="text-sm font-medium text-[var(--foreground)]">
+        {formatCompactTokenAmount(rawValue, decimals, symbol)}
+      </span>
+      <span className="inline-flex rounded-md bg-[var(--surface-elevated)] px-2 py-0.5 text-xs text-[var(--foreground-secondary)]">
+        {formatSmartCurrency(usdValue || 0, { alwaysTwoDecimals: true })}
+      </span>
+    </div>
+  );
+}
+
+function PositionCell({
+  vault,
+  loading,
+  align = 'end',
+}: {
+  vault: Vault;
+  loading: boolean;
+  align?: 'start' | 'end';
+}) {
+  const { morphoHoldings } = useWallet();
+  const { getVaultData } = useVaultData();
+  const { address } = useAccount();
+
+  const vaultData = getVaultData(vault.address);
+  const position = morphoHoldings.positions.find(
+    (item) => item.vault.address.toLowerCase() === vault.address.toLowerCase()
+  );
+  const decimals = resolveAssetDecimals(vault.symbol, vaultData?.assetDecimals);
+  const positionUsd = position
+    ? resolvePositionAssetsUsd(position, {
+        assetDecimals: position.assetDecimals ?? decimals,
+        symbol: vault.symbol,
+      })
+    : 0;
+  const positionRaw = position?.assets
+    ? formatPositionTokenAmount(
+        position.assets,
+        position.assetDecimals ?? decimals,
+        vault.symbol
+      )
+    : '-';
+
+  const alignClass = align === 'start' ? 'items-start' : 'items-end';
+
+  if (!address || morphoHoldings.isLoading) {
+    return (
+      <div className={`flex flex-col ${alignClass} gap-1.5`}>
+        <Skeleton width="5rem" height="1rem" />
+        <Skeleton width="4rem" height="0.875rem" />
+      </div>
+    );
+  }
+
+  if (!hasOnChainVaultShares(position)) {
+    return <span className="text-sm text-[var(--foreground-muted)]">-</span>;
+  }
+
+  if (loading && !position?.assets) {
+    return (
+      <div className={`flex flex-col ${alignClass} gap-1.5`}>
+        <Skeleton width="5rem" height="1rem" />
+        <Skeleton width="4rem" height="0.875rem" />
+      </div>
+    );
+  }
+
+  return (
+    <div className={`flex flex-col ${alignClass} gap-1`}>
+      <span className="text-sm font-medium text-[var(--foreground)]">{positionRaw}</span>
+      <span className="inline-flex rounded-md bg-[var(--surface-elevated)] px-2 py-0.5 text-xs text-[var(--foreground-secondary)]">
+        {formatPositionUsd(positionUsd)}
+      </span>
+    </div>
+  );
+}
+
+interface VaultExplorerRowProps {
+  vault: Vault;
+  showYourPosition: boolean;
+}
+
+function VaultExplorerRow({
+  vault,
+  showYourPosition,
+}: VaultExplorerRowProps) {
+  const router = useRouter();
+  const { getVaultData, isLoading } = useVaultData();
+  const vaultData = getVaultData(vault.address);
+  const loading = isLoading(vault.address);
+  const decimals = resolveAssetDecimals(vault.symbol, vaultData?.assetDecimals);
+  const isCurated = isCuratedVaultAddress(vault.address);
+
+  const openVault = () => {
+    if (!isCurated) return;
+    router.push(getVaultRoute(vault.address));
+  };
+
+  return (
+    <tr
+      role={isCurated ? 'button' : undefined}
+      tabIndex={isCurated ? 0 : undefined}
+      aria-label={isCurated ? `Open ${preferredVaultName(vaultData?.name, vault.name, vault.address)}` : undefined}
+      onClick={isCurated ? openVault : undefined}
+      onKeyDown={
+        isCurated ? (event) => handleRowKeyDown(event, openVault) : undefined
+      }
+      className={`border-b border-[var(--border)] transition-colors ${
+        isCurated
+          ? 'hover:bg-[var(--surface-hover)] cursor-pointer'
+          : 'cursor-default'
+      }`}
+    >
+      <td className="px-4 sm:px-6 py-4 align-middle">
+        <span className="inline-flex rounded-md bg-[var(--surface-elevated)] px-2.5 py-1 text-xs font-medium text-[var(--foreground-secondary)]">
+          Base
+        </span>
+      </td>
+
+      <td className="px-4 sm:px-6 py-4 align-middle">
+        <div
+          className="flex items-center gap-3 min-w-[180px]"
+        >
+          <VaultLogo vault={vault} />
+          <div className="min-w-0">
+            <div className="flex items-center gap-2 min-w-0">
+              <VaultName name={preferredVaultName(vaultData?.name, vault.name, vault.address)} />
+              {!isCurated ? (
+                <span className="shrink-0 text-[10px] text-[var(--foreground-muted)]">
+                  External
+                </span>
+              ) : null}
+            </div>
+            <VaultShareLabel vault={vault} />
+          </div>
+        </div>
+      </td>
+
+      {showYourPosition && (
+        <td className="px-4 sm:px-6 py-4 align-middle text-right">
+          <PositionCell vault={vault} loading={loading} />
+        </td>
+      )}
+
+      <td className="px-4 sm:px-6 py-4 align-middle text-right">
+        <ValueCell
+          rawValue={vaultData?.totalAssets}
+          usdValue={vaultData?.totalDeposits}
+          decimals={decimals}
+          symbol={vault.symbol}
+          loading={loading}
+        />
+      </td>
+
+      <td className="px-4 sm:px-6 py-4 align-middle text-right">
+        <ValueCell
+          rawValue={resolveTotalUnderlyingLiquidityAssets(
+            vaultData?.liquidityBreakdown,
+            vaultData?.liquidityAssets ?? vaultData?.totalAssets
+          )}
+          usdValue={resolveTotalUnderlyingLiquidityUsd(
+            vaultData?.liquidityBreakdown,
+            vaultData?.currentLiquidity
+          )}
+          decimals={decimals}
+          symbol={vault.symbol}
+          loading={loading}
+        />
+      </td>
+
+      <td className="px-4 sm:px-6 py-4 align-middle text-right">
+        {loading || !vaultData ? (
+          <Skeleton width="3.5rem" height="1rem" className="ml-auto" />
+        ) : (
+          <span className="text-sm font-semibold text-[var(--primary)] tabular-nums">
+            {formatPercentage(vaultData.apy)}
+          </span>
+        )}
+      </td>
+    </tr>
+  );
+}
+
+interface VaultExplorerTableProps {
+  vaults: Vault[];
+  emptyMessage?: string;
+}
+
+export default function VaultExplorerTable({
+  vaults,
+  emptyMessage = 'No vaults match the selected filters.',
+}: VaultExplorerTableProps) {
+  const isMounted = useIsClient();
+  const { isConnected } = useAccount();
+  const showYourPosition = isConnected;
+
+  if (!isMounted) {
+    return (
+      <div className="px-4 sm:px-6 py-8">
+        <Skeleton width="100%" height="12rem" />
+      </div>
+    );
+  }
+
+  if (vaults.length === 0) {
+    return (
+      <div className="px-4 sm:px-6 py-12 text-center">
+        <p className="text-sm text-[var(--foreground-muted)]">{emptyMessage}</p>
+      </div>
+    );
+  }
+
+  return (
+    <>
+      <div className="lg:hidden">
+        {vaults.map((vault) => (
+          <VaultExplorerMobileCard
+            key={vault.address}
+            vault={vault}
+            showYourPosition={showYourPosition}
+          />
+        ))}
+      </div>
+
+      <div className="hidden lg:block overflow-x-auto">
+      <table className={`w-full ${showYourPosition ? 'min-w-[880px]' : 'min-w-[720px]'}`}>
+        <thead>
+          <tr className="border-b border-[var(--border)] text-left">
+            <th className="px-4 sm:px-6 py-3 text-xs font-medium text-[var(--foreground-secondary)]">Network</th>
+            <th className="px-4 sm:px-6 py-3 text-xs font-medium text-[var(--foreground-secondary)]">Vault</th>
+            {showYourPosition && (
+              <th className="px-4 sm:px-6 py-3 text-xs font-medium text-[var(--foreground-secondary)] text-right">
+                Your Position
+              </th>
+            )}
+            <th className="px-4 sm:px-6 py-3 text-xs font-medium text-[var(--foreground-secondary)] text-right">Deposits</th>
+            <th className="px-4 sm:px-6 py-3 text-xs font-medium text-[var(--foreground-secondary)] text-right">Liquidity</th>
+            <th className="px-4 sm:px-6 py-3 text-xs font-medium text-[var(--foreground-secondary)] text-right">APY</th>
+          </tr>
+        </thead>
+        <tbody>
+          {vaults.map((vault) => (
+            <VaultExplorerRow
+              key={vault.address}
+              vault={vault}
+              showYourPosition={showYourPosition}
+            />
+          ))}
+        </tbody>
+      </table>
+      </div>
+    </>
+  );
+}
+
+// Compact table for dashboard with Your Position column
+interface DashboardVaultTableProps {
+  vaults: Vault[];
+  emptyMessage?: string;
+}
+
+function DashboardVaultColGroup() {
+  return (
+    <colgroup>
+      <col className="w-[34%]" />
+      <col className="w-[22%]" />
+      <col className="w-[22%]" />
+      <col className="w-[22%]" />
+    </colgroup>
+  );
+}
+
+const DASHBOARD_HEAD_CELL =
+  'px-2 py-2 text-xs font-medium leading-tight whitespace-nowrap text-[var(--foreground-secondary)]';
+const DASHBOARD_VALUE_CELL = 'px-2 py-2.5 align-middle text-right';
+
+function DashboardVaultTableHead() {
+  return (
+    <thead>
+      <tr className="border-b border-[var(--border)] text-left">
+        <th className={DASHBOARD_HEAD_CELL}>Vault</th>
+        <th className={`${DASHBOARD_HEAD_CELL} text-right`}>Your Position</th>
+        <th className={`${DASHBOARD_HEAD_CELL} text-right`}>Earned Interest</th>
+        <th className={`${DASHBOARD_HEAD_CELL} text-right`}>APY / TVL</th>
+      </tr>
+    </thead>
+  );
+}
+
+function DashboardVaultEmptyState({
+  emptyMessage,
+  onExploreVaults,
+}: {
+  emptyMessage: string;
+  onExploreVaults: () => void;
+}) {
+  return (
+    <>
+      <div className="hidden @min-[640px]:block min-w-0">
+        <table className="w-full table-fixed">
+          <DashboardVaultColGroup />
+          <DashboardVaultTableHead />
+          <tbody>
+            <tr>
+              <td colSpan={4} className="px-4 py-10 sm:py-12 text-center">
+                <p className="text-sm text-[var(--foreground-muted)] leading-relaxed">
+                  {emptyMessage}{' '}
+                  <button
+                    type="button"
+                    onClick={onExploreVaults}
+                    className="text-[var(--primary)] hover:underline font-medium"
+                  >
+                    Explore vaults
+                  </button>{' '}
+                  to make your first deposit.
+                </p>
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+      <div className="@min-[640px]:hidden px-4 py-10 sm:py-12 text-center">
+        <p className="text-sm text-[var(--foreground-muted)] leading-relaxed">
+          {emptyMessage}{' '}
+          <button
+            type="button"
+            onClick={onExploreVaults}
+            className="text-[var(--primary)] hover:underline font-medium"
+          >
+            Explore vaults
+          </button>{' '}
+          to make your first deposit.
+        </p>
+      </div>
+    </>
+  );
+}
+
+/** One dashboard vault row: this contract's own position, profit, APY and TVL. */
+function DashboardVaultRow({ vault }: { vault: Vault }) {
+  const router = useRouter();
+  const { address } = useAccount();
+  const { morphoHoldings } = useWallet();
+  const { getVaultData, isLoading } = useVaultData();
+  const vaultData = getVaultData(vault.address) as MorphoVaultData | null;
+  const loading = isLoading(vault.address);
+  const decimals = resolveAssetDecimals(vault.symbol, vaultData?.assetDecimals);
+  const position = morphoHoldings.positions.find(
+    (item) => item.vault.address.toLowerCase() === vault.address.toLowerCase()
+  );
+  const positionUsd = position
+    ? resolvePositionAssetsUsd(position, { assetDecimals: decimals, symbol: vault.symbol })
+    : 0;
+  const isCurated = isCuratedVaultAddress(vault.address);
+  const openVault = () => {
+    if (!isCurated) return;
+    router.push(getVaultRoute(vault.address));
+  };
+
+  return (
+    <tr
+      role={isCurated ? 'button' : undefined}
+      tabIndex={isCurated ? 0 : undefined}
+      aria-label={isCurated ? `Open ${preferredVaultName(vaultData?.name, vault.name, vault.address)}` : undefined}
+      onClick={isCurated ? openVault : undefined}
+      onKeyDown={isCurated ? (event) => handleRowKeyDown(event, openVault) : undefined}
+      className={`border-b border-[var(--border)] transition-colors ${
+        isCurated ? 'hover:bg-[var(--surface-hover)] cursor-pointer' : 'cursor-default'
+      }`}
+    >
+      <td className="px-2 py-2.5 align-middle">
+        <div className="flex items-start gap-2 min-w-0">
+          <VaultLogo vault={vault} size={28} />
+          <div className="min-w-0 flex-1">
+            <VaultName name={preferredVaultName(vaultData?.name, vault.name, vault.address)} lines={2} />
+            <VaultShareLabel vault={vault} />
+          </div>
+        </div>
+      </td>
+      <td className={DASHBOARD_VALUE_CELL}>
+        {!address || morphoHoldings.isLoading ? (
+          <Skeleton width="4.5rem" height="1rem" className="ml-auto" />
+        ) : hasOnChainVaultShares(position) ? (
+          <DashboardTokenValue
+            rawValue={position?.assets}
+            decimals={decimals}
+            symbol={vault.symbol}
+            usd={positionUsd}
+          />
+        ) : (
+          <span className="text-sm text-[var(--foreground-muted)]">-</span>
+        )}
+      </td>
+      <td className={DASHBOARD_VALUE_CELL}>
+        <EarnedInterestCell vault={vault} decimals={decimals} />
+      </td>
+      <td className={DASHBOARD_VALUE_CELL}>
+        {loading || !vaultData ? (
+          <Skeleton width="4rem" height="1rem" className="ml-auto" />
+        ) : (
+          <DashboardApyTvlValue vaultData={vaultData} />
+        )}
+      </td>
+    </tr>
+  );
+}
+
+export function DashboardVaultTable({
+  vaults,
+  emptyMessage = 'No vault deposits yet.',
+}: DashboardVaultTableProps) {
+  const router = useRouter();
+  const isMounted = useIsClient();
+  const { morphoHoldings } = useWallet();
+  const { getVaultData, isLoading } = useVaultData();
+
+  // Largest position first; ties keep the list's order.
+  const sortedVaults = useMemo(() => {
+    const usdOf = (vault: Vault) => {
+      const position = morphoHoldings.positions.find(
+        (item) => item.vault.address.toLowerCase() === vault.address.toLowerCase()
+      );
+      return position ? resolvePositionAssetsUsd(position) : 0;
+    };
+    return vaults
+      .map((vault, index) => ({ vault, index, usd: usdOf(vault) }))
+      .sort((a, b) => b.usd - a.usd || a.index - b.index)
+      .map(({ vault }) => vault);
+  }, [vaults, morphoHoldings.positions]);
+  const hasExternal = vaults.some((vault) => !isCuratedVaultAddress(vault.address));
+
+  if (!isMounted) {
+    return (
+      <div className="px-4 py-8">
+        <Skeleton width="100%" height="8rem" />
+      </div>
+    );
+  }
+
+  if (vaults.length === 0) {
+    if (morphoHoldings.isLoading) {
+      return (
+        <div className="@container min-w-0">
+          <div className="hidden @min-[640px]:block min-w-0">
+            <table className="w-full table-fixed">
+              <DashboardVaultColGroup />
+              <DashboardVaultTableHead />
+              <tbody>
+                <tr>
+                  <td colSpan={4} className="px-4 py-8">
+                    <Skeleton width="100%" height="4rem" />
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+          <div className="@min-[640px]:hidden px-4 py-8">
+            <Skeleton width="100%" height="6rem" />
+          </div>
+        </div>
+      );
+    }
+
+    return (
+      <div className="@container min-w-0">
+        <DashboardVaultEmptyState
+          emptyMessage={emptyMessage}
+          onExploreVaults={() => router.push('/vaults')}
+        />
+      </div>
+    );
+  }
+
+  const renderMobileCard = (vault: Vault) => {
+    const vaultData = getVaultData(vault.address) as MorphoVaultData | null;
+    const decimals = resolveAssetDecimals(vault.symbol, vaultData?.assetDecimals);
+    const position = morphoHoldings.positions.find(
+      (item) => item.vault.address.toLowerCase() === vault.address.toLowerCase()
+    );
+    return (
+      <DashboardVaultMobileCard
+        key={vault.address}
+        vault={vault}
+        positionAssets={position?.assets}
+        positionUsd={
+          position
+            ? resolvePositionAssetsUsd(position, { assetDecimals: decimals, symbol: vault.symbol })
+            : 0
+        }
+        loading={isLoading(vault.address)}
+        vaultData={vaultData}
+        showCuratedLabel={hasExternal}
+      />
+    );
+  };
+
+  return (
+    // Container width (not viewport): half-column dashboards stay on cards until wide enough for the table.
+    <div className="@container min-w-0">
+      <div className="@min-[640px]:hidden">
+        {sortedVaults.map(renderMobileCard)}
+      </div>
+
+      <div className="hidden @min-[640px]:block min-w-0">
+      <table className="w-full table-fixed">
+        <DashboardVaultColGroup />
+        <DashboardVaultTableHead />
+        <tbody>
+          {sortedVaults.map((vault) => (
+            <DashboardVaultRow key={vault.address} vault={vault} />
+          ))}
+        </tbody>
+      </table>
+      </div>
+    </div>
+  );
+}

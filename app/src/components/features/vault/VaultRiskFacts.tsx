@@ -1,0 +1,181 @@
+'use client';
+
+import type { ReactNode } from 'react';
+import { useQuery } from '@tanstack/react-query';
+import type { MorphoVaultData } from '@/types/vault';
+import { MORPHO_DISCLAIMER_URL, MORPHO_GRAPHQL_REVALIDATE_SECONDS } from '@/lib/constants';
+import { useUnixTimestamp } from '@/hooks/useClientOnly';
+import type { PendingChangeDirection, VaultPendingChange } from '@/lib/vault-v2-pending';
+import { getMorphoVaultUrl } from '@/lib/liquidity-utils';
+import { formatTimeUntil } from '@/lib/vault-details';
+
+const RISK_FRAMEWORK_URL = '/risk';
+
+/** What the curator checks before a market can hold funds. */
+const SCREENING: ReadonlyArray<{ label: string; body: string }> = [
+  {
+    label: 'Collateral',
+    body: 'What backs each loan: a native asset, a wrapped or staked version of one, or a tokenized stock, and how it can be redeemed.',
+  },
+  {
+    label: 'Market liquidity',
+    body: 'How much can be withdrawn from the market and how much of it is borrowed, so exits stay possible. Collateral also needs secondary-market liquidity, so it can be sold if a loan is liquidated.',
+  },
+  {
+    label: 'Oracle and LTV',
+    body: 'Where the price comes from and how often it updates, and how much can be borrowed against the collateral before liquidation.',
+  },
+];
+
+function ExternalLink({
+  href,
+  children,
+  external = true,
+}: {
+  href: string;
+  children: ReactNode;
+  external?: boolean;
+}) {
+  return (
+    <a
+      href={href}
+      {...(external ? { target: '_blank', rel: 'noopener noreferrer' } : {})}
+      className="font-medium text-[var(--primary)] hover:text-[var(--primary-hover)] hover:underline"
+    >
+      {children}
+    </a>
+  );
+}
+
+const DIRECTION_MARK: Record<PendingChangeDirection, { symbol: string; label: string; className: string }> = {
+  add: { symbol: '+', label: 'Adds', className: 'text-[var(--warning)] border-[var(--warning)]' },
+  remove: { symbol: '−', label: 'Removes', className: 'text-[var(--foreground-secondary)] border-[var(--border-strong)]' },
+  change: { symbol: '•', label: 'Changes', className: 'text-[var(--foreground-secondary)] border-[var(--border-strong)]' },
+};
+
+async function fetchPendingChanges(address: string, chainId: number): Promise<VaultPendingChange[]> {
+  const response = await fetch(`/api/vault/v2/${address}/pending?chainId=${chainId}`);
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(data.error || 'Failed to load pending changes');
+  return Array.isArray(data.pending) ? data.pending : [];
+}
+
+/** More pending changes than this are shown in a closed dropdown. */
+const PENDING_COLLAPSE_AFTER = 5;
+
+/**
+ * Curator changes waiting out their timelock. Hidden when there are none (or the read
+ * fails): it is a heads-up, not a status.
+ */
+function PendingChanges({ vaultData }: { vaultData: MorphoVaultData }) {
+  const { data: pending } = useQuery({
+    queryKey: ['vault-pending', vaultData.address.toLowerCase(), vaultData.chainId],
+    staleTime: MORPHO_GRAPHQL_REVALIDATE_SECONDS * 1000,
+    retry: 1,
+    queryFn: () => fetchPendingChanges(vaultData.address, vaultData.chainId),
+  });
+  const now = useUnixTimestamp();
+  if (!pending || pending.length === 0) return null;
+  const collapsed = pending.length > PENDING_COLLAPSE_AFTER;
+
+  const heading = (
+    <>
+      Pending change{pending.length === 1 ? '' : 's'}
+      {collapsed && <span className="ml-1">({pending.length})</span>}
+      <span className="ml-1.5 font-normal text-[var(--foreground-secondary)]">
+        Proposed by the curator, public until the timelock ends
+      </span>
+    </>
+  );
+  const list = (
+    <ul className="space-y-1.5">
+      {pending.map((change) => {
+        const mark = DIRECTION_MARK[change.direction];
+        return (
+          <li key={change.id} className="flex items-start gap-2 text-xs sm:text-sm">
+            <span
+              className={`mt-0.5 inline-flex h-4 w-4 shrink-0 items-center justify-center rounded-full border text-[11px] font-bold leading-none ${mark.className}`}
+              aria-label={mark.label}
+              title={mark.label}
+            >
+              {mark.symbol}
+            </span>
+            <span className="min-w-0 text-[var(--foreground)]">
+              {change.title}
+              <span className="text-[var(--foreground-secondary)]"> · {formatTimeUntil(change.validAt, now)}</span>
+            </span>
+          </li>
+        );
+      })}
+    </ul>
+  );
+  const boxClass =
+    'rounded-lg border border-[var(--border-subtle)] bg-[var(--warning-subtle)] px-3 py-2.5 sm:px-4';
+
+  // A long list starts closed so it does not push the rest of Risk down.
+  if (collapsed) {
+    return (
+      <details className={`group ${boxClass}`}>
+        <summary className="flex cursor-pointer list-none items-start justify-between gap-2 text-xs sm:text-sm font-semibold text-[var(--foreground)] [&::-webkit-details-marker]:hidden">
+          <span>{heading}</span>
+          <span
+            aria-hidden="true"
+            className="shrink-0 text-[var(--foreground-secondary)] transition-transform group-open:rotate-180"
+          >
+            ▾
+          </span>
+        </summary>
+        <div className="mt-2">{list}</div>
+      </details>
+    );
+  }
+
+  return (
+    <div className={`${boxClass} space-y-2`}>
+      <p className="text-xs sm:text-sm font-semibold text-[var(--foreground)]">{heading}</p>
+      {list}
+    </div>
+  );
+}
+
+/** Risk in plain words: the strategy, how markets are screened, and pending curator changes. */
+export default function VaultRiskFacts({ vaultData }: { vaultData: MorphoVaultData }) {
+  const marketsUrl = `${getMorphoVaultUrl(vaultData.chainId, vaultData.address, vaultData.name)}#allocation`;
+
+  return (
+    <div className="space-y-3">
+      <div className="space-y-2 text-sm text-[var(--foreground-secondary)] leading-relaxed max-w-3xl">
+        <p>
+          The curator chooses which markets this vault lends to and how much each market can hold.
+          A change that adds risk waits out the timelock before it takes effect.
+        </p>
+      </div>
+
+      <div className="rounded-lg border border-[var(--border-subtle)] bg-[var(--surface-elevated)] p-3 sm:p-4 space-y-2">
+        <p className="text-xs font-medium text-[var(--foreground-secondary)]">
+          Every market is screened on
+        </p>
+        <dl className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+          {SCREENING.map((item) => (
+            <div key={item.label} className="min-w-0 space-y-0.5">
+              <dt className="text-sm font-semibold text-[var(--foreground)]">{item.label}</dt>
+              <dd className="text-xs sm:text-sm text-[var(--foreground-secondary)] leading-relaxed">
+                {item.body}
+              </dd>
+            </div>
+          ))}
+        </dl>
+      </div>
+
+      <PendingChanges vaultData={vaultData} />
+
+      <p className="flex flex-wrap gap-x-4 gap-y-1 text-xs sm:text-sm">
+        <ExternalLink href={marketsUrl}>
+          View markets on Morpho
+        </ExternalLink>
+        <ExternalLink href={RISK_FRAMEWORK_URL} external={false}>Risk framework</ExternalLink>
+        <ExternalLink href={MORPHO_DISCLAIMER_URL}>Morpho’s disclaimer</ExternalLink>
+      </p>
+    </div>
+  );
+}

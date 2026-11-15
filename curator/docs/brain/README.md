@@ -1,0 +1,61 @@
+# Curator — Brain (closed loop)
+
+Single entry for AI sessions. Deep architecture stays in **`CLAUDE.md`**. This folder is the **loop**: what to read, what to update, what live tools to use.
+
+```
+┌─────────────┐     ┌──────────────┐     ┌─────────────────┐
+│  TODO.md    │────▶│  Code + MCP  │────▶│  Log + docs     │
+│  (intent)   │     │  (execute)   │     │  (memory)       │
+└─────────────┘     └──────────────┘     └────────┬────────┘
+       ▲                                          │
+       └──────────────────────────────────────────┘
+```
+
+## Session loop (do every time)
+
+1. **Read** `TODO.md` → Today (top → bottom). Skip Later unless asked.
+2. **Load context** — this file + relevant `CLAUDE.md` sections (see map below). Invariants: `AGENTS.md`.
+3. **Use Morpho MCP** when the task needs live vault, Blue market, or Midnight state instead of guessing. See [`MCP.md`](./MCP.md). Oracle feeds stay on https://oracles.morpho.dev/. App data shapes stay on the BFF.
+4. **Implement** — match existing patterns; no server private keys; wallet writes only.
+5. **Close the loop** before ending:
+   - Mark items in `TODO.md` (move to Done or check off).
+   - Append `docs/brain/CHANGELOG.md`.
+   - Update `AGENTS.md` / `CLAUDE.md` if behavior or routes changed.
+   - Run `npm run lint` (and `npm run build` before push).
+
+## Doc map (who owns what)
+
+| Doc | Role | Edit when |
+|-----|------|-----------|
+| **`TODO.md`** | Intent queue | Starting/finishing work |
+| **`docs/brain/`** | Closed-loop hub + changelog + MCP | Every substantive session |
+| **`AGENTS.md`** | Short invariants contract | Routes, auth, write rules, polling |
+| **`CLAUDE.md`** | Deep architecture | Vault mechanics, GraphQL, Safe, formatting |
+| **`.cursor/rules/*.mdc`** | Always-on Cursor rules | Session protocol changes |
+| **`.cursor/mcp.json`** | Morpho MCP wiring | MCP server / tools change |
+
+## CLAUDE.md section map (don't load all at once)
+
+| Topic | Section |
+|-------|---------|
+| Working agreements / env | §0 |
+| Layout / routes | §2 |
+| V1 vs V2 vault model | §3 |
+| Allocation data flow | §4 |
+| Reallocation UX | §5 |
+| Number formatting | §6 |
+| On-chain writes | §7 |
+| Auth | §9 |
+| Pitfalls | §10 |
+| Multisig Safe | §13 |
+| CCTP | §14 (removed — not in tree) |
+| Theme / density | §16 |
+| Blue market writes | not in this dashboard |
+
+## Related
+
+- **Oracle validation:** https://oracles.morpho.dev/
+
+## Refactor status
+
+Brain hub + Morpho MCP + session rule are **in use** (closed loop). `TODO.md` has no Later items. Optional next, only if asked: thin `AGENTS.md` further, or split oversized `CLAUDE.md` chapters into `docs/brain/topics/` when a section is edited often.

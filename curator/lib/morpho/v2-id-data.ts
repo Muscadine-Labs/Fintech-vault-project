@@ -1,0 +1,163 @@
+import {
+  decodeAbiParameters,
+  encodeAbiParameters,
+  keccak256,
+  parseAbiParameters,
+  type Address,
+  type Hex,
+} from 'viem';
+import type { CapInfo } from '@/app/api/vaults/[id]/governance/route';
+import type { V2VaultRiskResponse } from '@/app/api/vaults/[id]/risk/route';
+import { isAdapterCap, isCollateralCap, isMarketCap } from '@/lib/morpho/cap-utils';
+
+export type MarketParamsInput = {
+  loanAsset?: { address: string } | null;
+  collateralAsset?: { address: string } | null;
+  oracleAddress?: string | null;
+  oracle?: { address?: string | null } | null;
+  irmAddress?: string | null;
+  lltv?: string | number | null;
+};
+
+const MARKET_PARAMS_ABI = parseAbiParameters(
+  'address, address, address, address, uint256'
+);
+
+function resolveOracleAddress(market: MarketParamsInput): Address {
+  const oracle =
+    market.oracleAddress ||
+    market.oracle?.address ||
+    '0x0000000000000000000000000000000000000000';
+  return oracle as Address;
+}
+
+export function resolveMarketParamsTuple(
+  market: MarketParamsInput
+): readonly [Address, Address, Address, Address, bigint] {
+  const loan = (market.loanAsset?.address ||
+    '0x0000000000000000000000000000000000000000') as Address;
+  const col = (market.collateralAsset?.address ||
+    '0x0000000000000000000000000000000000000000') as Address;
+  const oracle = resolveOracleAddress(market);
+  const irm = (market.irmAddress ||
+    '0x0000000000000000000000000000000000000000') as Address;
+  const lltv = market.lltv != null ? BigInt(market.lltv) : 0n;
+  return [loan, col, oracle, irm, lltv];
+}
+
+/**
+ * MorphoVaultV2Adapter / MorphoVaultV1Adapter allocate/deallocate `data`.
+ * Must be empty (`0x`) — non-empty bytes revert with InvalidData.
+ */
+export const EMPTY_ADAPTER_DATA = '0x' as Hex;
+
+/** MorphoMarketV1Adapter allocate/deallocate `data` = abi.encode(marketParams). */
+export function encodeMarketParamsData(market: MarketParamsInput): Hex {
+  const [loan, col, oracle, irm, lltv] = resolveMarketParamsTuple(market);
+  return encodeAbiParameters(MARKET_PARAMS_ABI, [loan, col, oracle, irm, lltv]);
+}
+
+/**
+ * True when `market` hashes to `marketKey`. A Blue market id is
+ * `keccak256(abi.encode(marketParams))`, so this proves the params are the
+ * market's own and not partial params back-filled with zero addresses.
+ */
+export function marketParamsMatchMarketKey(
+  market: MarketParamsInput,
+  marketKey: string
+): boolean {
+  try {
+    return keccak256(encodeMarketParamsData(market)).toLowerCase() === marketKey.toLowerCase();
+  } catch {
+    return false;
+  }
+}
+
+/** Collateral token from MorphoMarketV1Adapter allocate/deallocate `data`. */
+export function collateralAddressFromMarketData(data: Hex): Address | null {
+  if (!data || data === '0x' || data === EMPTY_ADAPTER_DATA) return null;
+  try {
+    const decoded = decodeAbiParameters(MARKET_PARAMS_ABI, data);
+    const col = decoded[1];
+    if (col === '0x0000000000000000000000000000000000000000') return null;
+    return col;
+  } catch {
+    return null;
+  }
+}
+
+/** Adapter cap idData = abi.encode("this", adapterAddress). */
+export function encodeAdapterCapIdData(adapterAddress: string): Hex {
+  return encodeAbiParameters(parseAbiParameters('string, address'), [
+    'this',
+    adapterAddress as Address,
+  ]);
+}
+
+/** Collateral cap idData = abi.encode("collateralToken", collateralAddress). */
+export function encodeCollateralCapIdData(collateralAddress: string): Hex {
+  return encodeAbiParameters(parseAbiParameters('string, address'), [
+    'collateralToken',
+    collateralAddress as Address,
+  ]);
+}
+
+/** Market cap idData = abi.encode("this/marketParams", adapterAddress, marketParams). */
+export function encodeMarketCapIdData(
+  adapterAddress: string,
+  market: MarketParamsInput
+): Hex {
+  return encodeAbiParameters(
+    parseAbiParameters('string, address, (address,address,address,address,uint256)'),
+    ['this/marketParams', adapterAddress as Address, resolveMarketParamsTuple(market)]
+  );
+}
+
+/** Market params from the risk payload that hash to `marketKey`, from any adapter. */
+function findVerifiedMarketParams(
+  risk: V2VaultRiskResponse,
+  marketKey: string
+): MarketParamsInput | null {
+  for (const adapter of risk.adapters ?? []) {
+    for (const m of adapter.markets ?? []) {
+      if (marketParamsMatchMarketKey(m.market, marketKey)) return m.market;
+    }
+  }
+  return null;
+}
+
+/**
+ * Market params that hash to this cap's market. Partial params encode a
+ * nonexistent market, so a write against them succeeds and changes nothing.
+ */
+export function resolveVerifiedMarketParams(
+  cap: CapInfo,
+  risk: V2VaultRiskResponse | null | undefined
+): MarketParamsInput | null {
+  if (!isMarketCap(cap) || !cap.marketKey || !cap.adapterAddress) return null;
+  if (cap.marketParams && marketParamsMatchMarketKey(cap.marketParams, cap.marketKey)) {
+    return cap.marketParams;
+  }
+  return risk ? findVerifiedMarketParams(risk, cap.marketKey) : null;
+}
+
+/** Resolve cap idData bytes for decreaseAbsoluteCap / decreaseRelativeCap. */
+export function resolveCapIdData(
+  cap: CapInfo,
+  risk: V2VaultRiskResponse | null | undefined
+): Hex | null {
+  if (isAdapterCap(cap) && cap.adapterAddress) {
+    return encodeAdapterCapIdData(cap.adapterAddress);
+  }
+
+  if (isCollateralCap(cap) && cap.collateralAddress) {
+    return encodeCollateralCapIdData(cap.collateralAddress);
+  }
+
+  if (isMarketCap(cap) && cap.adapterAddress) {
+    const market = resolveVerifiedMarketParams(cap, risk);
+    if (market) return encodeMarketCapIdData(cap.adapterAddress, market);
+  }
+
+  return null;
+}

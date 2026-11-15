@@ -1,0 +1,76 @@
+import type { Metadata, Viewport } from 'next'
+import localFont from 'next/font/local'
+import './globals.css'
+import { AppLayout } from '@/components/layout/AppLayout'
+import { headers } from 'next/headers'
+import { cookieToInitialState } from 'wagmi'
+import { Providers } from './Providers'
+import { config } from '@/config/wagmi'
+import { getAppUrl } from '@/lib/app-url'
+import { APP_NAME } from '@/lib/constants'
+
+const appUrl = getAppUrl()
+
+// Self-hosted (Figtree latin variable font from Google Fonts, SIL OFL), so the build never
+// downloads fonts: next/font/google fetches at build time and failed on Vercel.
+const figtree = localFont({
+  src: './fonts/Figtree-latin-wght.woff2',
+  weight: '400 700',
+  display: 'swap',
+  variable: '--font-figtree',
+})
+
+
+export const viewport: Viewport = {
+  width: 'device-width',
+  initialScale: 1,
+  viewportFit: 'cover',
+}
+
+export const metadata: Metadata = {
+  metadataBase: new URL(appUrl),
+  title: APP_NAME,
+  description: 'Deposit into curated Morpho vaults on Base. Track portfolio, APY, and allocations.',
+  applicationName: APP_NAME,
+  icons: {
+    icon: '/favicon.svg',
+    shortcut: '/favicon.svg',
+    apple: '/favicon.svg',
+  },
+  alternates: {
+    canonical: appUrl,
+  },
+  openGraph: {
+    type: 'website',
+    url: appUrl,
+    siteName: APP_NAME,
+    title: APP_NAME,
+    description: 'Curated Morpho vaults on Base — deposit, withdraw, and track your portfolio.',
+    images: [{ url: '/favicon.svg', width: 32, height: 32, alt: APP_NAME }],
+  },
+  twitter: {
+    card: 'summary',
+    title: APP_NAME,
+    description: 'Curated Morpho vaults on Base.',
+    images: ['/favicon.svg'],
+  },
+}
+
+export default async function RootLayout({
+  children,
+}: {
+  children: React.ReactNode
+}) {
+  const cookie = (await headers()).get('cookie')
+  const initialState = cookieToInitialState(config, cookie)
+
+  return (
+    <html lang="en">
+      <body className={figtree.className}>
+          <Providers initialState={initialState}>
+              <AppLayout>{children}</AppLayout>
+          </Providers>
+      </body>
+    </html>
+  )
+}

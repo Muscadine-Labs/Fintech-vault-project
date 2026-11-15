@@ -1,0 +1,82 @@
+import {
+  getConfiguredVaultDisplayName,
+  getVaultByAddress,
+} from '@/lib/config/vaults';
+
+/** GraphQL `__typename` for a Vault V2 adapter that deposits into another Vault V2. */
+export const MORPHO_VAULT_V2_ADAPTER_TYPENAME = 'MorphoVaultV2Adapter';
+
+/** GraphQL `type` field on MorphoVaultV2Adapter. */
+export const MORPHO_VAULT_V2_ADAPTER_TYPE = 'MorphoVaultV2';
+
+export const UNDERLYING_VAULT_FALLBACK = 'Underlying vault';
+
+export type VaultV2UnderlyingInfo = {
+  address: string;
+  name: string | null;
+  symbol: string | null;
+  avgNetApy?: number | null;
+  netApy?: number | null;
+  liquidity?: string | null;
+  liquidityUsd?: number | null;
+};
+
+export function isMorphoVaultV2Adapter(adapter: {
+  __typename?: string | null;
+  type?: string | null;
+  adapterType?: string | null;
+}): boolean {
+  const t = adapter.__typename ?? adapter.adapterType ?? adapter.type ?? '';
+  return t === MORPHO_VAULT_V2_ADAPTER_TYPENAME || t === MORPHO_VAULT_V2_ADAPTER_TYPE;
+}
+
+/** Blue is Morpho Market V1. Midnight is the fixed-rate adapter. */
+export function vaultAdapterProduct(adapter: {
+  __typename?: string | null;
+  type?: string | null;
+  adapterType?: string | null;
+}): 'blue' | 'midnight' | null {
+  const blob = `${adapter.__typename ?? ''} ${adapter.adapterType ?? ''} ${adapter.type ?? ''}`.toLowerCase();
+  if (blob.includes('midnight') || blob.includes('fixed')) return 'midnight';
+  if (blob.includes('marketv1') || blob.includes('market v1') || blob.includes('variable')) return 'blue';
+  return null;
+}
+
+export function underlyingVaultLabel(
+  vault: { name?: string | null; symbol?: string | null } | null | undefined,
+  fallback = UNDERLYING_VAULT_FALLBACK
+): string {
+  return vault?.name || vault?.symbol || fallback;
+}
+
+/** Morpho GraphQL `innerVault` fields on MorphoVaultV2Adapter. */
+export type GraphUnderlyingVaultFields = {
+  address?: string | null;
+  name?: string | null;
+  symbol?: string | null;
+  avgNetApy?: number | null;
+  netApy?: number | null;
+  liquidity?: string | number | null;
+  liquidityUsd?: number | null;
+};
+
+/** GraphQL `innerVault` on a Vault V2 adapter. */
+export function mergeUnderlyingVaultInfo(
+  _wrapperVaultAddress: string,
+  graph: GraphUnderlyingVaultFields | null | undefined
+): VaultV2UnderlyingInfo | null {
+  const address = graph?.address;
+  if (!address) return null;
+  const childCfg = getVaultByAddress(address);
+  const liquidity =
+    graph?.liquidity != null && graph.liquidity !== '' ? String(graph.liquidity) : null;
+  return {
+    address,
+    name: graph?.name ?? (childCfg ? getConfiguredVaultDisplayName(childCfg) : null),
+    symbol: graph?.symbol ?? childCfg?.assetSymbol ?? null,
+    avgNetApy: graph?.avgNetApy ?? null,
+    netApy: graph?.netApy ?? null,
+    liquidity,
+    liquidityUsd: graph?.liquidityUsd ?? null,
+  };
+}

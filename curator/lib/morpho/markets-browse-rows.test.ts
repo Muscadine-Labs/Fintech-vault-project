@@ -1,0 +1,121 @@
+import { describe, expect, it } from 'vitest';
+import type { CuratorMarketListItem } from '@/lib/morpho/curator-markets';
+import type { MidnightMarketListItem } from '@/lib/morpho/midnight-markets';
+import {
+  blueBrowseRow,
+  compareBrowseRows,
+  matchesListedFilter,
+  midnightBrowseRow,
+  paginateBrowseRows,
+  type MarketsBrowseRow,
+} from './markets-browse-rows';
+
+function blue(overrides: Partial<CuratorMarketListItem> = {}): MarketsBrowseRow {
+  return blueBrowseRow({
+    marketId: '0xblue',
+    collateralSymbol: 'cbBTC',
+    loanSymbol: 'USDC',
+    lltv: '860000000000000000',
+    sizeUsd: 100,
+    liquidityAssetsUsd: 40,
+    avgNetSupplyApy: 0.05,
+    listed: true,
+    configuredVaults: [],
+    ...overrides,
+  } as CuratorMarketListItem);
+}
+
+function midnight(overrides: Partial<MidnightMarketListItem> = {}): MarketsBrowseRow {
+  return midnightBrowseRow({
+    marketId: '0xmidnight',
+    collateralLabel: 'cbBTC',
+    loanSymbol: 'USDC',
+    lltvRatio: 0.86,
+    sizeUsd: 20,
+    maturity: 1_800_000_000,
+    listed: null,
+    ...overrides,
+  } as MidnightMarketListItem);
+}
+
+describe('compareBrowseRows', () => {
+  it('sorts Blue and Midnight together by market size', () => {
+    const rows = [midnight(), blue()].sort((a, b) => compareBrowseRows(a, b, 'sizeUsd', 'desc'));
+    expect(rows.map((row) => row.product)).toEqual(['blue', 'midnight']);
+  });
+
+  it('keeps a blank Midnight APY below a real Blue rate in either direction', () => {
+    const rows = [midnight(), blue()];
+    expect(
+      [...rows].sort((a, b) => compareBrowseRows(a, b, 'apy', 'desc')).map((row) => row.product)
+    ).toEqual(['blue', 'midnight']);
+    expect(
+      [...rows].sort((a, b) => compareBrowseRows(a, b, 'apy', 'asc')).map((row) => row.product)
+    ).toEqual(['blue', 'midnight']);
+  });
+
+  it('keeps Blue, which has no maturity, below a Midnight maturity', () => {
+    const rows = [blue(), midnight()].sort((a, b) =>
+      compareBrowseRows(a, b, 'maturity', 'asc')
+    );
+    expect(rows.map((row) => row.product)).toEqual(['midnight', 'blue']);
+  });
+
+  it('reads Blue LLTV from WAD and leaves Midnight without a variable rate', () => {
+    expect(blue().lltv).toBeCloseTo(0.86);
+    expect(midnight().apy).toBeNull();
+    expect(midnight().liquidityUsd).toBeNull();
+    expect(midnight().listed).toBeNull();
+    expect(blue().maturity).toBeNull();
+  });
+
+  it('carries the Midnight listed flag and sorts it with Blue', () => {
+    expect(midnight({ listed: true }).listed).toBe(true);
+    expect(midnight({ listed: false }).listed).toBe(false);
+    const rows = [blue({ listed: true }), midnight({ listed: false })].sort((a, b) =>
+      compareBrowseRows(a, b, 'listed', 'asc')
+    );
+    expect(rows.map((row) => row.product)).toEqual(['midnight', 'blue']);
+  });
+});
+
+describe('matchesListedFilter', () => {
+  it('splits listed and unlisted on the explicit flag', () => {
+    expect(matchesListedFilter(true, 'listed')).toBe(true);
+    expect(matchesListedFilter(false, 'listed')).toBe(false);
+    expect(matchesListedFilter(false, 'unlisted')).toBe(true);
+    expect(matchesListedFilter(true, 'unlisted')).toBe(false);
+    expect(matchesListedFilter(false, 'all')).toBe(true);
+  });
+
+  it('keeps an unknown flag under Listed, never under Not listed', () => {
+    expect(matchesListedFilter(null, 'listed')).toBe(true);
+    expect(matchesListedFilter(undefined, 'listed')).toBe(true);
+    expect(matchesListedFilter(null, 'unlisted')).toBe(false);
+  });
+});
+
+describe('paginateBrowseRows', () => {
+  const rows = Array.from({ length: 250 }, (_, i) => i);
+
+  it('returns 100-row pages', () => {
+    const first = paginateBrowseRows(rows, 0);
+    expect(first.totalPages).toBe(3);
+    expect(first.rows).toHaveLength(100);
+    expect(first.rows[0]).toBe(0);
+    const last = paginateBrowseRows(rows, 2);
+    expect(last.rows).toEqual(rows.slice(200));
+  });
+
+  it('clamps a page past the end to the last page', () => {
+    const page = paginateBrowseRows(rows.slice(0, 120), 5);
+    expect(page.page).toBe(1);
+    expect(page.rows).toEqual(rows.slice(100, 120));
+  });
+
+  it('keeps one empty page for an empty list and clamps bad input', () => {
+    expect(paginateBrowseRows([], 3)).toEqual({ page: 0, totalPages: 1, rows: [] });
+    expect(paginateBrowseRows(rows, -2).page).toBe(0);
+    expect(paginateBrowseRows(rows, Number.NaN).page).toBe(0);
+  });
+});

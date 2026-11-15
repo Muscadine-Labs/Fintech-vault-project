@@ -1,0 +1,224 @@
+import { useQuery } from '@tanstack/react-query';
+import { apiFetch } from '@/lib/data/api-fetch';
+import {
+  DASHBOARD_QUERY_OPTIONS,
+  INDEXED_VAULT_QUERY_OPTIONS,
+} from '@/lib/data/query-config';
+
+export interface ProtocolStats {
+  /** Some Morpho reads failed; TVL / users may be understated (result not cached). */
+  warning?: string | null;
+  totalDeposited: number;
+  activeVaults: number;
+  users: number;
+  tvlTrend: Array<{ date: string; value: number }>;
+  tvlByVault?: Array<{
+    name: string;
+    address: string;
+    data: Array<{ date: string; value: number }>;
+  }>;
+  activeVaultsList?: Array<{
+    name: string;
+    address: string;
+    tvl: number;
+  }>;
+}
+
+export interface VaultWithData {
+  id: string;
+  name: string | null;
+  symbol: string | null;
+  asset: string | null;
+  assetDecimals?: number | null;
+  address: string;
+  chainId: number;
+  scanUrl: string;
+  performanceFeeBps: number | null;
+  status: 'active' | 'paused' | 'deprecated';
+  riskTier: 'low' | 'medium' | 'high';
+  createdAt: string | null;
+  description?: string;
+  version?: 'v2';
+  listCategory?: string | null;
+  tvl: number | null;
+  /** Raw total assets in vault asset units (Morpho `totalAssets`). */
+  totalAssetsUnderlying?: string | null;
+  apy: number | null;
+  depositors: number;
+  revenueAllTime: number | null;
+  feesAllTime: number | null;
+  lastHarvest: string | null;
+  idleAssetsUnderlying?: string | null;
+  liquidityUnderlying?: string | null;
+  liquidityUsd?: number | null;
+  liquidityAdapter?: {
+    label: string;
+    utilizationPercent: number | null;
+  } | null;
+}
+
+export interface VaultDetail extends VaultWithData {
+  apy: number | null;
+  apyBase: number | null;
+  apyBoosted: number | null;
+  treasuryRevenueYtd: number | null;
+  utilization: number | null;
+  analytics?: {
+    totalAssetsUnderlying: string | null;
+    liquidityUsd: number | null;
+    liquidityUnderlying: string | null;
+    idleAssetsUsd: number | null;
+    idleAssetsUnderlying: string | null;
+    idlePercent: number | null;
+    deployedPercent: number | null;
+    managementFeePercent: number | null;
+    capUtilizationPercent: number | null;
+  };
+  revenueAllTime: number | null;
+  feesAllTime: number | null;
+  apyBreakdown?: {
+    apy: number | null;
+    netApy: number | null;
+    netApyWithoutRewards: number | null;
+    avgApy: number | null;
+    avgNetApy: number | null;
+    dailyApy: number | null;
+    dailyNetApy: number | null;
+    weeklyApy: number | null;
+    weeklyNetApy: number | null;
+    monthlyApy: number | null;
+    monthlyNetApy: number | null;
+    underlyingYieldApr: number | null;
+  };
+  rewards?: Array<{
+    assetAddress: string;
+    supplyApr: number;
+    yearlySupplyTokens: number;
+    chainId?: number | null;
+  }>;
+  allocation?: Array<{
+    marketKey: string;
+    loanAssetAddress?: string | null;
+    loanAssetName?: string | null;
+    loanAssetSymbol?: string | null;
+    collateralAssetAddress?: string | null;
+    collateralAssetName?: string | null;
+    collateralAssetSymbol?: string | null;
+    oracleAddress?: string | null;
+    irmAddress?: string | null;
+    lltv?: number | null;
+    lltvRaw?: string | null;
+    supplyCap?: number | null;
+    supplyAssets?: number | null;
+    supplyAssetsUsd?: number | null;
+    supplyApy?: number | null;
+    borrowApy?: number | null;
+    utilization?: number | null;
+    liquidityAssetsUsd?: number | null;
+    marketRewards?: Array<{
+      assetAddress: string;
+      chainId?: number | null;
+      supplyApr: number;
+      borrowApr?: number | null;
+    }>;
+  }>;
+  queues?: {
+    supplyQueueIndex: number | null;
+    withdrawQueueIndex: number | null;
+  };
+  warnings?: Array<{ type: string; level: 'YELLOW' | 'RED' }>;
+  metadata?: {
+    description?: string | null;
+    image?: string | null;
+    curators?: Array<{ image?: string | null; name?: string | null; url?: string | null }>;
+  };
+  roles?: {
+    owner?: string | null;
+    curator?: string | null;
+    guardian?: string | null;
+    /** V1: duration in seconds (number). V2: address (string). */
+    timelock?: string | number | null;
+  };
+  transactions?: Array<{
+    blockNumber: number;
+    hash: string;
+    type: string;
+    userAddress?: string | null;
+  }>;
+  parameters: {
+    performanceFeeBps: number;
+    performanceFeePercent?: number | null;
+    maxDeposit: number | null;
+    maxWithdrawal: number | null;
+    strategyNotes: string;
+  };
+  historicalData?: {
+    apy?: Array<{ x: number; y: number }>;
+    netApy?: Array<{ x: number; y: number }>;
+    totalAssets?: Array<{ x: number; y: number }>;
+    totalAssetsUsd?: Array<{ x: number; y: number }>;
+  };
+}
+
+// Protocol stats hook
+export const useProtocolStats = () => {
+  return useQuery<ProtocolStats>({
+    queryKey: ['protocol-stats'],
+    queryFn: async () => {
+      const response = await apiFetch('/api/protocol-stats');
+      if (!response.ok) throw new Error('Failed to fetch protocol stats');
+      return response.json();
+    },
+    ...DASHBOARD_QUERY_OPTIONS,
+  });
+};
+
+const SIDEBAR_VAULT_LIST_FILTERS = { sidebar: true as const };
+
+// Vault list hook
+export const useVaultList = (filters?: {
+  asset?: string;
+  status?: string;
+  riskTier?: string;
+  search?: string;
+  /** When true, includes test vaults that are excluded from business views. */
+  includeAll?: boolean;
+  /** When true, only active V2 vaults for sidebar (excludes test). */
+  sidebar?: boolean;
+}) => {
+  return useQuery<VaultWithData[]>({
+    queryKey: ['vaults', filters],
+    queryFn: async () => {
+      const searchParams = new URLSearchParams();
+      if (filters?.asset) searchParams.set('asset', filters.asset);
+      if (filters?.status) searchParams.set('status', filters.status);
+      if (filters?.riskTier) searchParams.set('riskTier', filters.riskTier);
+      if (filters?.search) searchParams.set('search', filters.search);
+      if (filters?.sidebar) searchParams.set('sidebar', 'true');
+      else if (filters?.includeAll) searchParams.set('includeAll', 'true');
+      
+      const response = await apiFetch(`/api/vaults?${searchParams}`);
+      if (!response.ok) throw new Error('Failed to fetch vaults');
+      return response.json();
+    },
+    ...INDEXED_VAULT_QUERY_OPTIONS,
+  });
+};
+
+// Vault detail hook
+export const useVault = (id: string) => {
+  return useQuery<VaultDetail>({
+    queryKey: ['vault', id],
+    queryFn: async () => {
+      const response = await apiFetch(`/api/vaults/${id}`);
+      if (!response.ok) throw new Error('Failed to fetch vault');
+      return response.json();
+    },
+    enabled: !!id,
+    ...INDEXED_VAULT_QUERY_OPTIONS,
+  });
+};
+
+/** Stable filters object for sidebar vault list (avoids query-key churn). */
+export { SIDEBAR_VAULT_LIST_FILTERS };
+

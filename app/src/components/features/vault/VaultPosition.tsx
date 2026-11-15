@@ -1,0 +1,981 @@
+'use client';
+
+import { useState, useEffect, useMemo, useCallback, useRef } from 'react';
+import { useAccount, useReadContract } from 'wagmi';
+import { MorphoVaultData } from '@/types/vault';
+import {
+  formatCurrency,
+  formatChartUsdAxisValue,
+  formatChartTokenAxisValue,
+  formatPositionUsd,
+  chartTokenAmountToRaw,
+  formatVaultChartTokenAmount,
+  formatVaultDetailTokenAmount,
+} from '@/lib/formatter';
+import { calculateYAxisDomain } from '@/lib/vault-utils';
+import { rawAmountToDecimal } from '@/lib/asset-decimals';
+import { CHART_MARGIN, axisWidthForLabels, withLeadingChartTick } from '@/lib/chart-utils';
+import {
+  buildActivityFlowEvents,
+  netDepositRawAtTime,
+  splitPositionValueAtPoint,
+  type ActivityFlowEvent,
+} from '@/lib/interest-utils';
+import { logger } from '@/lib/logger';
+import { useToast } from '@/contexts/ToastContext';
+import { usePrices } from '@/contexts/PriceContext';
+import { AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts';
+import { Button } from '@/components/ui';
+import { Skeleton } from '@/components/ui/Skeleton';
+import { ERC20_BALANCE_ABI, ERC4626_ABI } from '@/lib/abis';
+import { useUnixTimestamp } from '@/hooks/useClientOnly';
+import { useVaultEarnedInterest } from '@/hooks/useVaultEarnedInterest';
+import { useLockPageScroll } from '@/hooks/useLockPageScroll';
+import { VaultChartWithAction } from './VaultChartWithAction';
+import { VaultEarningsBreakdown } from './VaultEarningsBreakdown';
+import { VaultTransactPanel } from './VaultTransactPanel';
+import { resolveAssetDecimals } from '@/lib/asset-decimals';
+import { BASE_CHAIN_ID } from '@/lib/constants';
+import { fetchPositionHistoryJson } from '@/lib/position-history-cache';
+import type { Transaction } from '@/types/api';
+import type { VaultTransactionTab } from '@/hooks/useScopedVaultTransaction';
+
+const VAULT_READ_QUERY = {
+  refetchInterval: false as const,
+  staleTime: 60_000,
+};
+
+interface VaultPositionProps {
+  vaultData: MorphoVaultData;
+  transactTab: VaultTransactionTab;
+  onTransactTabChange: (tab: VaultTransactionTab) => void;
+  canDeposit: boolean;
+}
+
+type TimeFrame = 'all' | '1Y' | '90D' | '30D' | '7D';
+
+const TIME_FRAME_SECONDS: Record<TimeFrame, number> = {
+  all: 0, // 0 means all data
+  '1Y': 365 * 24 * 60 * 60,
+  '90D': 90 * 24 * 60 * 60,
+  '30D': 30 * 24 * 60 * 60,
+  '7D': 7 * 24 * 60 * 60,
+};
+
+type PositionHistoryPoint = {
+  timestamp: number;
+  assets: number;
+  assetsUsd: number;
+  shares: number;
+  assetsRaw?: string;
+};
+
+async function loadPositionHistory(
+  version: string,
+  vaultAddress: string,
+  chainId: number,
+  userAddress: string,
+  period: string,
+  signal?: AbortSignal
+): Promise<PositionHistoryPoint[] | null> {
+  const data = (await fetchPositionHistoryJson(
+    `/api/vault/${version}/${vaultAddress}/position-history?chainId=${chainId}&userAddress=${userAddress}&period=${period}`,
+    signal
+  )) as { error?: unknown; history?: unknown } | null;
+  if (data == null) return null;
+  if (data.error || !Array.isArray(data.history)) return data.error ? null : [];
+  return data.history as PositionHistoryPoint[];
+}
+
+async function fetchActivityFlows(
+  vaultAddress: string,
+  chainId: number,
+  userAddress: string,
+  signal?: AbortSignal
+): Promise<{ deposits: Transaction[]; withdrawals: Transaction[] } | null> {
+  const response = await fetch(
+    `/api/vault/v2/${vaultAddress}/activity?chainId=${chainId}&userAddress=${userAddress}`,
+    { signal }
+  );
+  if (!response.ok) return null;
+  const data = await response.json().catch(() => ({}));
+  if (data.error || !Array.isArray(data.deposits) || !Array.isArray(data.withdrawals)) {
+    return null;
+  }
+  return { deposits: data.deposits, withdrawals: data.withdrawals };
+}
+
+function assetsFromBalance(
+  shares: bigint | undefined,
+  assets: bigint | undefined
+): bigint | undefined {
+  if (shares === undefined) return undefined;
+  if (shares === BigInt(0)) return BigInt(0);
+  return assets;
+}
+
+const formatDate = (timestamp: number) => {
+  const date = new Date(timestamp * 1000);
+  return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+};
+
+/** Keep the first and last tick, and at most `max` labels, so the axis stays readable on a phone. */
+function capChartTicks(ticks: number[] | undefined, max: number): number[] | undefined {
+  if (!ticks || ticks.length <= max) return ticks;
+  const last = ticks.length - 1;
+  const indexes = new Set<number>([0, last]);
+  const step = last / (max - 1);
+  for (let i = 1; i < max - 1; i++) indexes.add(Math.round(i * step));
+  return [...indexes].sort((a, b) => a - b).map((index) => ticks[index]);
+}
+
+export default function VaultPosition({
+  vaultData,
+  transactTab,
+  onTransactTabChange,
+  canDeposit,
+}: VaultPositionProps) {
+  const { address, isConnected } = useAccount();
+  const { priceForVault } = usePrices();
+  const vaultAssetPrice = priceForVault(vaultData.address) ?? 0;
+  const { error: showErrorToast } = useToast();
+
+  const now = useUnixTimestamp();
+  const [loading, setLoading] = useState(true);
+  const [selectedTimeFrame, setSelectedTimeFrame] = useState<TimeFrame>('all');
+  const [valueType, setValueType] = useState<'usd' | 'token'>('token');
+  const [isTimeFrameMenuOpen, setIsTimeFrameMenuOpen] = useState(false);
+  const [userPositionHistory, setUserPositionHistory] = useState<PositionHistoryPoint[]>([]);
+  const [hourly30dPositionHistory, setHourly30dPositionHistory] = useState<PositionHistoryPoint[]>([]);
+  const [activityFlowEvents, setActivityFlowEvents] = useState<ActivityFlowEvent[] | null>(null);
+  const [activityLoading, setActivityLoading] = useState(false);
+  const [activityError, setActivityError] = useState(false);
+
+  const { data: sharesRaw, isError: sharesReadFailed } = useReadContract({
+    address: address ? vaultData.address as `0x${string}` : undefined,
+    chainId: vaultData.chainId as typeof BASE_CHAIN_ID,
+    abi: ERC20_BALANCE_ABI,
+    functionName: 'balanceOf',
+    args: address ? [address as `0x${string}`] : undefined,
+    query: { enabled: !!address, ...VAULT_READ_QUERY },
+  });
+
+  // Convert shares to assets using convertToAssets
+  const { data: assetsRaw, isError: assetsReadFailed } = useReadContract({
+    address: sharesRaw !== undefined ? vaultData.address as `0x${string}` : undefined,
+    chainId: vaultData.chainId as typeof BASE_CHAIN_ID,
+    abi: ERC4626_ABI,
+    functionName: 'convertToAssets',
+    args: sharesRaw !== undefined ? [sharesRaw] : undefined,
+    query: { enabled: sharesRaw !== undefined, ...VAULT_READ_QUERY },
+  });
+
+  const pageAssets = useMemo(() => assetsFromBalance(sharesRaw, assetsRaw), [sharesRaw, assetsRaw]);
+  const currentAssetsRaw = pageAssets?.toString();
+
+  // Ask for earned interest once the on-chain balance is known (or its read failed). Asking
+  // before it is known sent the request twice: once without the balance, once with it.
+  const balanceReadSettled =
+    currentAssetsRaw !== undefined || sharesReadFailed || assetsReadFailed;
+  const pageEarnedInterest = useVaultEarnedInterest(
+    isConnected && balanceReadSettled ? vaultData.address : undefined,
+    vaultData.symbol,
+    currentAssetsRaw
+  );
+  const earnedInterest = useMemo(
+    () =>
+      isConnected && !balanceReadSettled
+        ? { ...pageEarnedInterest, isLoading: true, error: null }
+        : pageEarnedInterest,
+    [isConnected, balanceReadSettled, pageEarnedInterest]
+  );
+  const interestDecimals = resolveAssetDecimals(
+    vaultData.symbol,
+    earnedInterest.assetDecimals || vaultData.assetDecimals
+  );
+
+  const depositAssetDecimals = resolveAssetDecimals(
+    vaultData.symbol,
+    vaultData.assetDecimals
+  );
+
+  const positionRawValue = pageAssets?.toString() ?? null;
+
+  const userVaultTotalUsd = useMemo(() => {
+    if (pageAssets === undefined) return 0;
+    const assetsDecimal = rawAmountToDecimal(pageAssets, depositAssetDecimals);
+    return assetsDecimal * vaultAssetPrice;
+  }, [pageAssets, depositAssetDecimals, vaultAssetPrice]);
+
+  useLockPageScroll(isTimeFrameMenuOpen);
+
+  const positionHistoryLoadedRef = useRef(false);
+  const positionHistoryFetchKeyRef = useRef('');
+
+  const positionHistoryFetchKey = `${vaultData.address}:${vaultData.chainId}:${address ?? ''}`;
+
+  useEffect(() => {
+    if (positionHistoryFetchKeyRef.current !== positionHistoryFetchKey) {
+      positionHistoryFetchKeyRef.current = positionHistoryFetchKey;
+      positionHistoryLoadedRef.current = false;
+    }
+  }, [positionHistoryFetchKey]);
+
+  useEffect(() => {
+    const abortController = new AbortController();
+
+    const fetchPositionHistory = async () => {
+      const userAddress = address;
+      if (!userAddress) {
+        setUserPositionHistory([]);
+        setLoading(false);
+        positionHistoryLoadedRef.current = false;
+        return;
+      }
+
+      const isInitialLoad = !positionHistoryLoadedRef.current;
+      if (isInitialLoad) {
+        setLoading(true);
+      }
+      try {
+        const history = await loadPositionHistory(
+          vaultData.version ?? 'v2',
+          vaultData.address,
+          vaultData.chainId,
+          userAddress,
+          'all',
+          abortController.signal
+        );
+        if (abortController.signal.aborted) return;
+        if (history == null) {
+          throw new Error('Failed to fetch position history');
+        }
+        setUserPositionHistory(history);
+      } catch (error) {
+        if (abortController.signal.aborted) return;
+        if (error instanceof Error && error.name === 'AbortError') return;
+        logger.error(
+          'Failed to fetch vault position history',
+          error instanceof Error ? error : new Error(String(error)),
+          { vaultAddress: vaultData.address, userAddress: address, chainId: vaultData.chainId }
+        );
+        setUserPositionHistory([]);
+        showErrorToast('Failed to load position data. Please refresh the page.', 5000);
+      } finally {
+        if (!abortController.signal.aborted) {
+          setLoading(false);
+          if (address) {
+            positionHistoryLoadedRef.current = true;
+          }
+        }
+      }
+    };
+
+    void fetchPositionHistory();
+    return () => abortController.abort();
+  }, [
+    vaultData.address,
+    vaultData.chainId,
+    vaultData.version,
+    address,
+    showErrorToast,
+    positionHistoryFetchKey,
+  ]);
+
+  const chartEndTimestamp = useMemo(() => {
+    let maxTs = 0;
+    for (const series of [userPositionHistory, hourly30dPositionHistory]) {
+      for (const point of series) {
+        if (point.timestamp > maxTs) maxTs = point.timestamp;
+      }
+    }
+    return maxTs || now;
+  }, [userPositionHistory, hourly30dPositionHistory, now]);
+
+  const hourly7dPositionHistory = useMemo(() => {
+    if (hourly30dPositionHistory.length === 0) return [];
+    const cutoff = chartEndTimestamp - TIME_FRAME_SECONDS['7D'];
+    return hourly30dPositionHistory.filter((point) => point.timestamp >= cutoff);
+  }, [hourly30dPositionHistory, chartEndTimestamp]);
+
+  // Fetch hourly data for 30D period (7D derived client-side from the same series)
+  useEffect(() => {
+    const abortController = new AbortController();
+    
+    const fetch30dHourlyPosition = async () => {
+      const userAddress = address;
+      if (!userAddress) {
+        setHourly30dPositionHistory([]);
+        return;
+      }
+      try {
+        const history = await loadPositionHistory(
+          vaultData.version ?? 'v2',
+          vaultData.address,
+          vaultData.chainId,
+          userAddress,
+          '30d',
+          abortController.signal
+        );
+        if (abortController.signal.aborted) return;
+        setHourly30dPositionHistory(history ?? []);
+      } catch (error) {
+        if (error instanceof Error && error.name === 'AbortError') return;
+        logger.warn(
+          'Failed to fetch 30D hourly position data, falling back to daily',
+          { 
+            vaultAddress: vaultData.address, 
+            userAddress: address, 
+            chainId: vaultData.chainId as typeof BASE_CHAIN_ID,
+            error: error instanceof Error ? error.message : String(error)
+          }
+        );
+        setHourly30dPositionHistory([]);
+      }
+    };
+
+    fetch30dHourlyPosition();
+    return () => abortController.abort();
+  }, [
+    vaultData.address,
+    vaultData.chainId,
+    vaultData.version,
+    address,
+  ]);
+
+  useEffect(() => {
+    const abortController = new AbortController();
+
+    const fetchActivity = async () => {
+      if (!address) {
+        setActivityFlowEvents([]);
+        setActivityLoading(false);
+        setActivityError(false);
+        return;
+      }
+      setActivityLoading(true);
+      setActivityError(false);
+
+      try {
+        const flow = await fetchActivityFlows(
+          vaultData.address,
+          vaultData.chainId,
+          address,
+          abortController.signal
+        );
+        if (abortController.signal.aborted) return;
+        if (flow == null) {
+          setActivityFlowEvents(null);
+          setActivityError(true);
+          setActivityLoading(false);
+          return;
+        }
+        const events = buildActivityFlowEvents(flow.deposits, flow.withdrawals);
+        if (abortController.signal.aborted) return;
+        setActivityFlowEvents(events);
+        setActivityError(false);
+        setActivityLoading(false);
+      } catch (error) {
+        if (abortController.signal.aborted) return;
+        if (error instanceof Error && error.name === 'AbortError') return;
+        setActivityFlowEvents(null);
+        setActivityError(true);
+        setActivityLoading(false);
+      }
+    };
+
+    void fetchActivity();
+    return () => abortController.abort();
+  }, [vaultData.address, vaultData.chainId, address]);
+
+  // Get asset price for calculating USD value when assetsUsd is 0
+  const getAssetPrice = vaultAssetPrice;
+
+  // Helper function to map position history to chart data format
+  const mapPositionHistoryToChartData = useCallback((sourceData: Array<{ timestamp: number; assets: number; assetsUsd: number; shares: number }>) => {
+    if (sourceData.length === 0) return [];
+    
+    return sourceData.map((point) => {
+      // If assetsUsd is 0 but assets exists, calculate USD value from assets * assetPrice
+      let calculatedUsd = point.assetsUsd;
+      if (calculatedUsd === 0 && point.assets > 0 && getAssetPrice > 0) {
+        calculatedUsd = point.assets * getAssetPrice;
+      }
+      return {
+        timestamp: point.timestamp,
+        date: formatDate(point.timestamp),
+        valueUsd: Math.max(0, calculatedUsd),
+        valueToken: Math.max(0, point.assets),
+      };
+    });
+  }, [getAssetPrice]);
+
+  // Map full position history to chart data format (for determining available time frames)
+  // This should always use the full userPositionHistory, not filtered by selectedTimeFrame
+  const fullUserDepositHistory = useMemo(() => {
+    return mapPositionHistoryToChartData(userPositionHistory);
+  }, [userPositionHistory, mapPositionHistoryToChartData]);
+
+  // Calculate available time frames based on FULL data range (not filtered by selectedTimeFrame)
+  // Find the minimum timestamp to ensure correctness even if data isn't sorted
+  const availableTimeFrames = useMemo(() => {
+    const series =
+      fullUserDepositHistory.length > 0
+        ? fullUserDepositHistory
+        : mapPositionHistoryToChartData(hourly30dPositionHistory);
+    if (series.length === 0) return ['all' as TimeFrame];
+
+    // Find minimum timestamp to ensure correctness regardless of sort order
+    // Use reduce instead of Math.min spread to avoid potential stack overflow with large arrays
+    const oldestTimestamp = series.reduce((min, d) => Math.min(min, d.timestamp), series[0].timestamp);
+    const dataRangeSeconds = chartEndTimestamp - oldestTimestamp;
+    
+    const frames: TimeFrame[] = ['all'];
+    
+    // Only add time frames that are <= the available data range
+    if (dataRangeSeconds >= TIME_FRAME_SECONDS['1Y']) {
+      frames.push('1Y');
+    }
+    if (dataRangeSeconds >= TIME_FRAME_SECONDS['90D']) {
+      frames.push('90D');
+    }
+    if (dataRangeSeconds >= TIME_FRAME_SECONDS['30D']) {
+      frames.push('30D');
+    }
+    if (dataRangeSeconds >= TIME_FRAME_SECONDS['7D']) {
+      frames.push('7D');
+    }
+    
+    return frames;
+  }, [fullUserDepositHistory, hourly30dPositionHistory, chartEndTimestamp, mapPositionHistoryToChartData]);
+
+  // Use GraphQL position history data directly - no calculation needed
+  // This is used for displaying the chart, and switches between hourly/daily based on selectedTimeFrame
+  // Reuses fullUserDepositHistory when not using hourly data to avoid redundant mapping
+  const userDepositHistory = useMemo(() => {
+    // Use hourly data for 7D and 30D periods, otherwise reuse fullUserDepositHistory
+    if (selectedTimeFrame === '7D' && hourly7dPositionHistory.length > 0) {
+      return mapPositionHistoryToChartData(hourly7dPositionHistory);
+    } else if (selectedTimeFrame === '30D' && hourly30dPositionHistory.length > 0) {
+      return mapPositionHistoryToChartData(hourly30dPositionHistory);
+    }
+    if (fullUserDepositHistory.length < 2 && hourly30dPositionHistory.length > fullUserDepositHistory.length) {
+      return mapPositionHistoryToChartData(hourly30dPositionHistory);
+    }
+    
+    // Reuse fullUserDepositHistory when using daily data to avoid redundant mapping
+    return fullUserDepositHistory;
+  }, [selectedTimeFrame, hourly7dPositionHistory, hourly30dPositionHistory, fullUserDepositHistory, mapPositionHistoryToChartData]);
+
+  // Filter chart data based on selected time frame and map to correct value type
+  const filteredChartData = useMemo(() => {
+    let data = userDepositHistory;
+    
+    if (selectedTimeFrame !== 'all' && userDepositHistory.length > 0) {
+      const cutoffTimestamp = chartEndTimestamp - TIME_FRAME_SECONDS[selectedTimeFrame];
+      data = userDepositHistory.filter(d => d.timestamp >= cutoffTimestamp);
+    }
+    
+    // Map to include the correct value based on valueType
+    const mappedData = data.map(item => ({
+      ...item,
+      value: valueType === 'usd' ? item.valueUsd : item.valueToken,
+    }));
+    
+    // Find the first index with a non-zero value
+    const firstNonZeroIndex = mappedData.findIndex(item => item.value > 0);
+    
+    // If we found a non-zero value, start from that point
+    // Otherwise, return all data (user might not have any position yet)
+    if (firstNonZeroIndex >= 0) {
+      return mappedData.slice(firstNonZeroIndex);
+    }
+    
+    return mappedData;
+  }, [userDepositHistory, selectedTimeFrame, valueType, chartEndTimestamp]);
+
+  const hasActivityBreakdown =
+    activityFlowEvents !== null && activityFlowEvents.length > 0;
+
+  const chartData = useMemo(() => {
+    if (!hasActivityBreakdown || !activityFlowEvents) {
+      return filteredChartData;
+    }
+
+    return filteredChartData.map((item) => {
+      const positionValueRaw = chartTokenAmountToRaw(item.valueToken, depositAssetDecimals);
+      const netDepositRaw = netDepositRawAtTime(activityFlowEvents, item.timestamp);
+      const { depositedRaw, interestRaw } = splitPositionValueAtPoint({
+        positionValueRaw,
+        netDepositRaw,
+      });
+
+      const depositedToken = rawAmountToDecimal(depositedRaw, depositAssetDecimals);
+      const interestToken = rawAmountToDecimal(interestRaw, depositAssetDecimals);
+      const totalValue = valueType === 'usd' ? item.valueUsd : item.valueToken;
+
+      if (valueType === 'usd') {
+        if (item.valueToken > 0) {
+          const usdRatio = item.valueUsd / item.valueToken;
+          return {
+            ...item,
+            deposited: depositedToken * usdRatio,
+            interest: interestToken * usdRatio,
+            value: totalValue,
+          };
+        }
+        return {
+          ...item,
+          deposited: 0,
+          interest: 0,
+          value: totalValue,
+        };
+      }
+
+      return {
+        ...item,
+        deposited: depositedToken,
+        interest: interestToken,
+        value: totalValue,
+      };
+    });
+  }, [
+    filteredChartData,
+    hasActivityBreakdown,
+    activityFlowEvents,
+    depositAssetDecimals,
+    valueType,
+  ]);
+
+  // Calculate Y-axis domain for better fit
+  const yAxisDomain = useMemo(() => {
+    if (chartData.length === 0) return [0, 100];
+    
+    const values = chartData.map((d) => d.value).filter((v) => v !== null && v !== undefined && !isNaN(v));
+    const domain = calculateYAxisDomain(values, {
+      bottomPaddingPercent: 0.12,
+      topPaddingPercent: 0.12,
+    });
+    
+    return domain || [0, 100];
+  }, [chartData]);
+
+  const yAxisWidth = useMemo(() => {
+    const [min, max] = yAxisDomain;
+    const format = (value: number) =>
+      valueType === 'usd'
+        ? formatChartUsdAxisValue(value)
+        : formatChartTokenAxisValue(value, depositAssetDecimals, vaultData.symbol);
+    return axisWidthForLabels([format(min), format(max), format((min + max) / 2)]);
+  }, [yAxisDomain, valueType, depositAssetDecimals, vaultData.symbol]);
+
+  // Helper function to calculate chart ticks based on time frame.
+  // Five labels fit a phone; more than that overlap.
+  const getChartTicks = useMemo(() => {
+    if (chartData.length === 0) return undefined;
+    
+    // Sort data once for all operations
+    const sortedData = [...chartData].sort((a, b) => a.timestamp - b.timestamp);
+    
+    // Determine interval configuration based on selected time frame
+    let dayInterval: number;
+    
+    if (selectedTimeFrame === '7D') {
+      dayInterval = 1; // Every day
+    } else if (selectedTimeFrame === '30D') {
+      dayInterval = 2; // Every 2 days
+    } else if (selectedTimeFrame === '90D') {
+      dayInterval = 5; // Every 5 days
+    } else if (selectedTimeFrame === '1Y') {
+      dayInterval = 30; // Every 30 days
+    } else {
+      // Calculate dynamic interval based on data range for 'all'
+      const firstTimestamp = sortedData[0].timestamp;
+      const lastTimestamp = sortedData[sortedData.length - 1].timestamp;
+      const totalDays = (lastTimestamp - firstTimestamp) / (24 * 60 * 60);
+      
+      // Determine interval based on total days
+      if (totalDays > 365) {
+        dayInterval = 30;
+      } else if (totalDays > 180) {
+        dayInterval = 12;
+      } else if (totalDays > 90) {
+        dayInterval = 10;
+      } else if (totalDays > 60) {
+        dayInterval = 7;
+      } else if (totalDays > 30) {
+        dayInterval = 5;
+      } else {
+        dayInterval = 3;
+      }
+    }
+    
+    // Generate ticks based on interval
+    const ticks: number[] = [];
+    const seenDates = new Set<string>();
+    let dayCount = 0;
+    
+    sortedData.forEach((point) => {
+      const date = new Date(point.timestamp * 1000);
+      const dateKey = date.toDateString();
+      
+      if (!seenDates.has(dateKey)) {
+        seenDates.add(dateKey);
+        if (dayCount % dayInterval === 0) {
+          ticks.push(point.timestamp);
+        }
+        dayCount++;
+      }
+    });
+    
+    return capChartTicks(
+      withLeadingChartTick(ticks.length > 0 ? ticks : undefined, sortedData[0]?.timestamp),
+      5
+    );
+  }, [selectedTimeFrame, chartData]);
+  
+
+  const formatChartValue = useCallback(
+    (value: number) => {
+      if (valueType === 'usd') {
+        return formatCurrency(value);
+      }
+      return formatVaultChartTokenAmount(value, depositAssetDecimals, vaultData.symbol);
+    },
+    [valueType, depositAssetDecimals, vaultData.symbol]
+  );
+
+  return (
+    <VaultChartWithAction
+      header={
+        <div className="flex items-start justify-between gap-6">
+          <div className="min-w-0">
+            <p className="text-xs text-[var(--foreground-secondary)] mb-1">Your Position</p>
+            {!isConnected ? (
+              <p className="text-sm text-[var(--foreground-muted)]">Connect wallet</p>
+            ) : positionRawValue === null ? (
+              <Skeleton width="8rem" height="2rem" />
+            ) : (() => {
+              try {
+                return BigInt(positionRawValue) <= BigInt(0);
+              } catch {
+                return false;
+              }
+            })() ? (
+              <p className="text-sm text-[var(--foreground-muted)]">No holdings</p>
+            ) : (
+              <>
+                <p className="text-xl sm:text-2xl font-bold text-[var(--foreground)]">
+                  {formatVaultDetailTokenAmount(
+                    positionRawValue,
+                    depositAssetDecimals,
+                    vaultData.symbol
+                  )}
+                </p>
+                <p className="text-xs text-[var(--foreground-secondary)] mt-1">
+                  {formatPositionUsd(userVaultTotalUsd)}
+                </p>
+              </>
+            )}
+          </div>
+
+          <div className="flex flex-col items-end gap-1 min-w-0">
+            <VaultEarningsBreakdown
+              symbol={vaultData.symbol}
+              decimals={interestDecimals}
+              allTimeRaw={
+                earnedInterest.error ? '' : earnedInterest.earnedInterestRaw || '0'
+              }
+              allTimeUsd={earnedInterest.error ? 0 : earnedInterest.earnedInterestUsd}
+              isConnected={isConnected}
+              isLoading={earnedInterest.isLoading}
+            />
+          </div>
+        </div>
+      }
+      action={
+        <VaultTransactPanel
+          key={vaultData.address}
+          vaultData={vaultData}
+          initialTab={transactTab}
+          onTabChange={onTransactTabChange}
+          positionDecimals={depositAssetDecimals}
+          currentAssetsRaw={
+            address && pageAssets === undefined ? null : pageAssets ?? BigInt(0)
+          }
+          history={userPositionHistory}
+          events={activityFlowEvents}
+          nowTs={now}
+          assetPriceUsd={getAssetPrice}
+          isConnected={isConnected}
+          earningsLoading={earnedInterest.isLoading}
+          activityLoading={activityLoading}
+          activityError={activityError}
+          canDeposit={canDeposit}
+        />
+      }
+    >
+      {isConnected && address ? (
+        <div className="flex flex-col">
+          {loading ? (
+            <div className="bg-[var(--surface-elevated)] rounded-lg p-2 sm:p-3 flex flex-col">
+              {/* Controls Row Skeleton */}
+              <div className="flex flex-wrap items-center justify-between gap-2 mb-3 shrink-0">
+                <div className="flex items-center gap-2">
+                  <Skeleton width="3rem" height="2rem" />
+                  <Skeleton width="3rem" height="2rem" />
+                  <Skeleton width="3rem" height="2rem" />
+                </div>
+                <div className="flex items-center gap-2 bg-[var(--surface)] rounded-lg p-1">
+                  <Skeleton width="3rem" height="2rem" />
+                  <Skeleton width="4rem" height="2rem" />
+                </div>
+              </div>
+              {/* Chart Skeleton */}
+              <div className="h-52 sm:h-56">
+                <div className="h-full flex flex-col justify-between">
+                  {/* Y-axis labels area */}
+                  <div className="flex justify-between mb-2">
+                    <Skeleton width="3rem" height="0.75rem" />
+                    <Skeleton width="3rem" height="0.75rem" />
+                  </div>
+                  {/* Chart area with wave pattern */}
+                  <div className="flex-1 flex items-end justify-between gap-1 px-2">
+                    {[45, 52, 38, 60, 48, 55, 42, 58, 50, 47, 53, 40, 57, 45, 50, 48, 55, 42, 58, 45].map((heightPercent, index) => (
+                      <Skeleton
+                        key={index}
+                        width="100%"
+                        height={`${heightPercent}%`}
+                        className="rounded-t"
+                      />
+                    ))}
+                  </div>
+                  {/* X-axis labels area */}
+                  <div className="flex justify-between mt-2">
+                    <Skeleton width="4rem" height="0.75rem" />
+                    <Skeleton width="4rem" height="0.75rem" />
+                  </div>
+                </div>
+              </div>
+            </div>
+          ) : (fullUserDepositHistory.length > 0 || hourly30dPositionHistory.length > 0) ? (
+            <div className="bg-[var(--surface-elevated)] rounded-lg p-2 sm:p-4 flex flex-col">
+              {/* Controls Row */}
+              <div className="flex flex-wrap items-center justify-between gap-2 mb-3 shrink-0">
+                {/* Time Frame Selector - Desktop: Buttons, Mobile: Hamburger Menu */}
+                <div className="relative">
+                  {/* Desktop: Show buttons */}
+                  <div className="hidden md:flex items-center gap-2">
+                    {availableTimeFrames.map((timeFrame) => (
+                      <Button
+                        key={timeFrame}
+                        onClick={() => setSelectedTimeFrame(timeFrame)}
+                        variant={selectedTimeFrame === timeFrame ? 'primary' : 'ghost'}
+                        size="sm"
+                        className="min-w-[3rem]"
+                      >
+                        {timeFrame === 'all' ? 'All' : timeFrame}
+                      </Button>
+                    ))}
+                  </div>
+
+                  {/* Mobile: Hamburger Menu */}
+                  <div className="md:hidden">
+                    <button
+                      onClick={() => setIsTimeFrameMenuOpen(!isTimeFrameMenuOpen)}
+                      className="flex items-center gap-2 px-3 py-2 bg-[var(--surface)] rounded-lg border border-[var(--border)] hover:bg-[var(--surface-hover)] transition-colors"
+                    >
+                      <span className="text-sm font-medium text-[var(--foreground)]">
+                        {selectedTimeFrame === 'all' ? 'All' : selectedTimeFrame}
+                      </span>
+                      <svg
+                        className={`w-4 h-4 text-[var(--foreground-secondary)] transition-transform ${
+                          isTimeFrameMenuOpen ? 'rotate-180' : ''
+                        }`}
+                        fill="none"
+                        stroke="currentColor"
+                        viewBox="0 0 24 24"
+                      >
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+                      </svg>
+                    </button>
+
+                    {/* Dropdown Menu */}
+                    {isTimeFrameMenuOpen && (
+                      <>
+                        <div
+                          className="fixed inset-0 z-10 touch-none overscroll-none bg-black/20"
+                          onClick={() => setIsTimeFrameMenuOpen(false)}
+                        />
+                        <div className="absolute left-0 top-full mt-2 bg-[var(--surface-elevated)] border border-[var(--border)] rounded-lg shadow-lg z-20 min-w-[120px]">
+                          {availableTimeFrames.map((timeFrame) => (
+                            <button
+                              key={timeFrame}
+                              onClick={() => {
+                                setSelectedTimeFrame(timeFrame);
+                                setIsTimeFrameMenuOpen(false);
+                              }}
+                              className={`w-full text-left px-4 py-2 text-sm transition-colors first:rounded-t-lg last:rounded-b-lg ${
+                                selectedTimeFrame === timeFrame
+                                  ? 'bg-[var(--primary-subtle)] text-[var(--primary)] font-medium'
+                                  : 'text-[var(--foreground)] hover:bg-[var(--surface-hover)]'
+                              }`}
+                            >
+                              {timeFrame === 'all' ? 'All' : timeFrame}
+                            </button>
+                          ))}
+                        </div>
+                      </>
+                    )}
+                  </div>
+                </div>
+                
+                {/* Value Type Toggle */}
+                <div className="flex items-center gap-2 bg-[var(--surface)] rounded-lg p-1">
+                  <button
+                    onClick={() => setValueType('token')}
+                    className={`px-3 py-1.5 text-sm font-medium rounded-md transition-all cursor-pointer ${
+                      valueType === 'token'
+                        ? 'bg-[var(--primary)] text-white'
+                        : 'text-[var(--foreground-secondary)] hover:text-[var(--foreground)]'
+                    }`}
+                  >
+                    {vaultData.symbol || 'Token'}
+                  </button>
+                  <button
+                    onClick={() => setValueType('usd')}
+                    className={`px-3 py-1.5 text-sm font-medium rounded-md transition-all cursor-pointer ${
+                      valueType === 'usd'
+                        ? 'bg-[var(--primary)] text-white'
+                        : 'text-[var(--foreground-secondary)] hover:text-[var(--foreground)]'
+                    }`}
+                  >
+                    USD
+                  </button>
+                </div>
+              </div>
+              <div className="w-full min-w-0 h-52 sm:h-56">
+                <ResponsiveContainer width="100%" height="100%" debounce={50}>
+                  <AreaChart data={chartData} margin={CHART_MARGIN}>
+                    <CartesianGrid strokeDasharray="3 3" stroke="var(--border-subtle)" />
+                    <XAxis 
+                      dataKey="timestamp" 
+                      tickFormatter={formatDate}
+                      stroke="var(--foreground-secondary)"
+                      style={{ fontSize: '11px' }}
+                      interval="preserveStartEnd"
+                      minTickGap={28}
+                      ticks={getChartTicks}
+                      padding={{ left: 0, right: 0 }}
+                    />
+                    <YAxis
+                      width={yAxisWidth}
+                      orientation="left"
+                      tickMargin={4}
+                      domain={yAxisDomain}
+                      tickFormatter={(value) => {
+                        if (value === undefined || typeof value !== 'number') return '';
+                        if (valueType === 'usd') {
+                          return formatChartUsdAxisValue(value);
+                        }
+                        return formatChartTokenAxisValue(
+                          value,
+                          depositAssetDecimals,
+                          vaultData.symbol
+                        );
+                      }}
+                      stroke="var(--foreground-secondary)"
+                      style={{ fontSize: '12px' }}
+                    />
+                    <Tooltip
+                      contentStyle={{
+                        backgroundColor: 'var(--surface-elevated)',
+                        border: '1px solid var(--border-subtle)',
+                        borderRadius: '8px',
+                      }}
+                      content={({ active, payload, label }) => {
+                        if (!active || !payload?.length) return null;
+                        const point = payload[0]?.payload as {
+                          deposited?: number;
+                          interest?: number;
+                          value?: number;
+                        };
+                        const timestamp =
+                          typeof label === 'number' ? label : parseFloat(String(label));
+
+                        if (
+                          hasActivityBreakdown &&
+                          point &&
+                          (point.deposited !== undefined || point.interest !== undefined)
+                        ) {
+                          const deposited = point.deposited ?? 0;
+                          const interest = point.interest ?? 0;
+                          const total = point.value ?? deposited + interest;
+                          return (
+                            <div className="rounded-lg border border-[var(--border-subtle)] bg-[var(--surface-elevated)] px-3 py-2 text-sm shadow-sm">
+                              <p className="mb-2 font-medium text-[var(--foreground)]">
+                                {`Date: ${formatDate(timestamp)}`}
+                              </p>
+                              <div className="space-y-1 text-[var(--foreground-secondary)]">
+                                <p>
+                                  <span className="text-[var(--primary)]">Deposited:</span>{' '}
+                                  {formatChartValue(deposited)}
+                                </p>
+                                <p>
+                                  <span className="text-[var(--success)]">Earned interest:</span>{' '}
+                                  {formatChartValue(interest)}
+                                </p>
+                                <p className="border-t border-[var(--border-subtle)] pt-1 font-medium text-[var(--foreground)]">
+                                  Total: {formatChartValue(total)}
+                                </p>
+                              </div>
+                            </div>
+                          );
+                        }
+
+                        const value = payload[0]?.value;
+                        if (typeof value !== 'number') return null;
+                        return (
+                          <div className="rounded-lg border border-[var(--border-subtle)] bg-[var(--surface-elevated)] px-3 py-2 text-sm shadow-sm">
+                            <p className="mb-1 font-medium text-[var(--foreground)]">
+                              {`Date: ${formatDate(timestamp)}`}
+                            </p>
+                            <p className="text-[var(--foreground-secondary)]">
+                              Your Position: {formatChartValue(value)}
+                            </p>
+                          </div>
+                        );
+                      }}
+                    />
+                    <Area
+                      type="monotone"
+                      dataKey="value"
+                      stroke="var(--primary)"
+                      fill="var(--primary-subtle)"
+                      strokeWidth={2}
+                      dot={false}
+                      isAnimationActive={false}
+                      activeDot={{ r: 4, fill: 'var(--primary)', stroke: 'var(--primary)', strokeWidth: 2 }}
+                    />
+                  </AreaChart>
+                </ResponsiveContainer>
+              </div>
+            </div>
+          ) : (
+            <div className="bg-[var(--surface-elevated)] rounded-lg p-6 text-center">
+              <p className="text-sm text-[var(--foreground-muted)]">
+                No deposit history available. Make your first deposit to see your position over time.
+              </p>
+            </div>
+          )}
+        </div>
+      ) : (
+        <div className="bg-[var(--surface-elevated)] rounded-lg border border-[var(--border-subtle)] p-6 text-center">
+          <p className="text-sm text-[var(--foreground-muted)]">
+            Connect a wallet to see your position over time.
+          </p>
+        </div>
+      )}
+      </VaultChartWithAction>
+  );
+}

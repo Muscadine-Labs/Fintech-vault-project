@@ -1,0 +1,1136 @@
+/**
+ * Morpho Midnight markets via REST.
+ * GraphQL (`api.morpho.org/graphql`) is Blue-only — Midnight is not in that schema.
+ * Docs: https://docs.morpho.org/developers/api/morpho-midnight/
+ */
+import { API_CACHE_MAX_AGE_MS } from '@/lib/api/response-cache';
+import { BASE_CHAIN_ID, MORPHO_REST_ORIGIN, SECONDS_PER_YEAR } from '@/lib/constants';
+import { fetchAssetUsdPrice, prefetchAssets, resolveTokenMeta } from '@/lib/morpho/known-tokens';
+import { getOraclePriceSnapshot, type OraclePriceSnapshot } from '@/lib/morpho/oracle-price';
+import {
+  getOracleTimestampData,
+  oracleTimestampFromFeeds,
+  type OracleTimestampData,
+} from '@/lib/morpho/oracle-utils';
+import { bigintRatio } from '@/lib/format/bigint-ratio';
+import { logger } from '@/lib/utils/logger';
+import { AppError } from '@/lib/utils/error-handler';
+import { gql } from 'graphql-request';
+import { formatUnits, type Address } from 'viem';
+import { morphoGraphQLClient } from '@/lib/morpho/graphql-client';
+import { formatLltvWad, selectMidnightCollaterals } from '@/lib/morpho/midnight-format';
+
+
+/** Morpho REST normally answers in well under a second; a stall must not hang the route. */
+const MIDNIGHT_FETCH_TIMEOUT_MS = 15_000;
+const MIDNIGHT_MARKETS_PAGE_LIMIT = 1000;
+/** Page cap: 5 × 1000 rows. Past it the list is cut and a warning is logged. */
+const MIDNIGHT_MARKETS_MAX_PAGES = 5;
+
+export type MidnightCollateral = {
+  token: string;
+  symbol: string;
+  decimals: number;
+  lltv: string;
+  liquidationCursor: string;
+  oracle: string;
+  /** Posted collateral, token raw units. Null when the position scan did not finish. */
+  postedAssets?: string | null;
+  oracleTimestampData?: OracleTimestampData | null;
+  oraclePrice?: OraclePriceSnapshot | null;
+};
+
+export type MidnightMarketListItem = {
+  marketId: string;
+  chainId: number;
+  loanSymbol: string;
+  loanAddress: string;
+  loanDecimals: number;
+  collaterals: MidnightCollateral[];
+  collateralLabel: string;
+  lltvLabel: string;
+  oracleAddress: string | null;
+  maturity: number;
+  tenorSeconds: number;
+  tenorLabel: string;
+  /** Outstanding loan-token units (`total_units`). Blue's market size. */
+  sizeAssets: string;
+  sizeUsd: number | null;
+  /** Primary collateral LLTV as a 0–1 ratio, for sorting. */
+  lltvRatio: number | null;
+  /**
+   * Morpho app trust-layer listing (`listed` on `GET /v0/midnight/markets`).
+   * `null` when the API omits it — unknown, not unlisted.
+   */
+  listed: boolean | null;
+};
+
+type MidnightBookCollateral = {
+  token?: string;
+  lltv?: string;
+  liquidation_cursor?: string;
+  oracle?: string;
+};
+
+type MidnightBookLevel = {
+  tick?: number;
+  price?: string;
+  units?: string;
+  assets?: string;
+  count?: number;
+};
+
+type MidnightBook = {
+  market_id?: string;
+  id?: string;
+  chain_id?: number;
+  midnight?: string;
+  loan_token?: string;
+  collaterals?: MidnightBookCollateral[];
+  maturity?: number | string;
+  rcf_threshold?: string;
+  enter_gate?: string;
+  liquidator_gate?: string;
+  asks?: MidnightBookLevel[];
+  bids?: MidnightBookLevel[];
+};
+
+function sumAssets(levels: MidnightBookLevel[] | undefined): bigint {
+  let total = 0n;
+  for (const level of levels ?? []) {
+    if (!level.assets) continue;
+    try {
+      total += BigInt(level.assets);
+    } catch {
+      // skip
+    }
+  }
+  return total;
+}
+
+/** Daily Midnight analytics point. APR uses that day's time to maturity, same as Morpho. */
+export type MidnightHistoryPoint = {
+  timestamp: number;
+  /** Outstanding loans, loan-token raw units. */
+  outstandingAssets: string | null;
+  outstandingUsd: number | null;
+  /** Loan tokens paid per unit that day. */
+  takePrice: number | null;
+  /** APR as a fraction (0.056 = 5.6%). Null on days with no take. */
+  apr: number | null;
+  /** Units bought by lenders that day (raw, `"0"` with no fills): the weight behind `apr`. */
+  lendUnits: string;
+};
+
+function takePriceNumber(priceWad: string | null | undefined): number | null {
+  if (!priceWad) return null;
+  try {
+    const price = Number(BigInt(priceWad)) / 1e18;
+    return Number.isFinite(price) && price > 0 ? price : null;
+  } catch {
+    return null;
+  }
+}
+
+/** WAD price → annualized rate. Midnight: (1/price − 1) × year / TTM. */
+function midnightPriceToApr(
+  priceWad: string | null | undefined,
+  ttmSeconds: number
+): number | null {
+  if (!priceWad || ttmSeconds <= 0) return null;
+  try {
+    const price = Number(BigInt(priceWad)) / 1e18;
+    if (!Number.isFinite(price) || price <= 0) return null;
+    const rate = (1 / price - 1) * (SECONDS_PER_YEAR / ttmSeconds);
+    return Number.isFinite(rate) ? rate : null;
+  } catch {
+    return null;
+  }
+}
+
+function formatTenorLabel(ttmSeconds: number): string {
+  if (ttmSeconds <= 0) return 'Matured';
+  const days = Math.round(ttmSeconds / 86400);
+  if (days < 14) return `${days}d`;
+  if (days < 80) return `${Math.round(days / 7)}w`;
+  const months = Math.round(days / 30.44);
+  return `${months}M`;
+}
+
+const ZERO_ADDRESS = '0x0000000000000000000000000000000000000000';
+
+function isZeroAddress(addr: string | null | undefined): boolean {
+  if (!addr) return true;
+  return addr.toLowerCase() === ZERO_ADDRESS;
+}
+
+function wadToRatio(wad: string | null | undefined): number | null {
+  if (!wad) return null;
+  try {
+    const ratio = Number(BigInt(wad)) / 1e18;
+    return Number.isFinite(ratio) ? ratio : null;
+  } catch {
+    return null;
+  }
+}
+
+type MidnightMarketRow = {
+  chain_id?: number;
+  market_id?: string;
+  loan_token?: string;
+  maturity?: number | string;
+  total_units?: string;
+  listed?: boolean | null;
+  collaterals?: MidnightBookCollateral[];
+};
+
+async function fetchMarketsPage(
+  chainId: number,
+  cursor: string | null
+): Promise<{ cursor?: string | null; data?: MidnightMarketRow[] }> {
+  const url = new URL(`${MORPHO_REST_ORIGIN}/v0/midnight/markets`);
+  url.searchParams.set('chain_ids', String(chainId));
+  // API max page is 1000 (Base had 1,281 markets on 2026-11-06, so two pages)
+  // instead of 13+ sequential 100-row round trips. Keep the cursor loop.
+  url.searchParams.set('limit', String(MIDNIGHT_MARKETS_PAGE_LIMIT));
+  // The API reads `sort_by` / `sort_direction` (`sort` / `order` are ignored).
+  url.searchParams.set('sort_by', 'total_units');
+  url.searchParams.set('sort_direction', 'desc');
+  if (cursor) url.searchParams.set('cursor', cursor);
+
+  const res = await fetch(url.toString(), {
+    cache: 'no-store',
+    signal: AbortSignal.timeout(MIDNIGHT_FETCH_TIMEOUT_MS),
+  });
+  if (!res.ok) {
+    throw new Error(`Midnight markets HTTP ${res.status}`);
+  }
+  return res.json() as Promise<{ cursor?: string | null; data?: MidnightMarketRow[] }>;
+}
+
+function rawToUsd(raw: string, decimals: number, priceUsd: number | null): number | null {
+  if (priceUsd == null) return null;
+  try {
+    const amount = bigintRatio(BigInt(raw), 10n ** BigInt(decimals));
+    if (!Number.isFinite(amount)) return null;
+    return amount * priceUsd;
+  } catch {
+    return null;
+  }
+}
+
+export type MidnightMarketList = {
+  markets: MidnightMarketListItem[];
+  /**
+   * Set when the list is incomplete (page cap hit). Never serve a cut list as
+   * complete (CLAUDE.md §8): the browser shows this and the route skips its cache.
+   */
+  warning: string | null;
+};
+
+export async function fetchMidnightMarkets(
+  chainId: number = BASE_CHAIN_ID
+): Promise<MidnightMarketList> {
+  const rows: MidnightMarketRow[] = [];
+  let cursor: string | null = null;
+  for (let i = 0; i < MIDNIGHT_MARKETS_MAX_PAGES; i += 1) {
+    const page = await fetchMarketsPage(chainId, cursor);
+    rows.push(...(page.data ?? []));
+    cursor = page.cursor ?? null;
+    if (!cursor) break;
+  }
+  let warning: string | null = null;
+  if (cursor) {
+    logger.warn('Midnight market list exceeded page cap', { chainId, rows: rows.length });
+    warning = `Showing the first ${rows.length.toLocaleString('en-US')} Midnight markets by size; smaller ones are not listed.`;
+  }
+
+  const tokenAddrs = new Set<string>();
+  for (const row of rows) {
+    if (row.loan_token) tokenAddrs.add(row.loan_token.toLowerCase());
+    for (const c of row.collaterals ?? []) {
+      if (c.token) tokenAddrs.add(c.token.toLowerCase());
+    }
+  }
+  const loanAddrs = [
+    ...new Set(rows.map((row) => row.loan_token?.toLowerCase()).filter((addr): addr is string => Boolean(addr))),
+  ];
+  // One Morpho read for every token's metadata and price (was one query per token, then one per
+  // loan-token price). Loan tokens are in `tokenAddrs`, so their prices come from the same read.
+  await prefetchAssets(Array.from(tokenAddrs), chainId, { prices: true });
+  await Promise.all(
+    Array.from(tokenAddrs).map((addr) => resolveTokenMeta(addr, chainId))
+  );
+  const loanPrices = new Map<string, number | null>();
+  await Promise.all(
+    loanAddrs.map(async (addr) => {
+      loanPrices.set(addr, await fetchAssetUsdPrice(addr, chainId));
+    })
+  );
+
+  const nowSec = Math.floor(Date.now() / 1000);
+  const mapped: MidnightMarketListItem[] = [];
+
+  for (const row of rows) {
+    const marketId = row.market_id;
+    const loanAddress = row.loan_token;
+    if (!marketId || !loanAddress) continue;
+
+    const maturity = Number(row.maturity ?? 0);
+    const tenorSeconds = Math.max(0, maturity - nowSec);
+    const loanMeta = await resolveTokenMeta(loanAddress, chainId);
+    const allCollaterals: MidnightCollateral[] = [];
+    for (const c of row.collaterals ?? []) {
+      if (!c.token) continue;
+      const meta = await resolveTokenMeta(c.token, chainId);
+      allCollaterals.push({
+        token: c.token,
+        symbol: meta.symbol,
+        decimals: meta.decimals,
+        lltv: c.lltv ?? '0',
+        liquidationCursor: c.liquidation_cursor ?? '0',
+        oracle: c.oracle ?? '',
+      });
+    }
+    const collaterals = selectMidnightCollaterals(allCollaterals, loanAddress);
+    const sizeAssets = row.total_units ?? '0';
+
+    mapped.push({
+      marketId,
+      chainId: row.chain_id ?? chainId,
+      loanSymbol: loanMeta.symbol,
+      loanAddress,
+      loanDecimals: loanMeta.decimals,
+      collaterals,
+      collateralLabel: collaterals.map((c) => c.symbol).join(', ') || '—',
+      lltvLabel: collaterals.map((c) => formatLltvWad(c.lltv)).join(' / ') || '—',
+      lltvRatio: wadToRatio(collaterals[0]?.lltv),
+      oracleAddress: collaterals[0]?.oracle || null,
+      maturity,
+      tenorSeconds,
+      tenorLabel: formatTenorLabel(tenorSeconds),
+      sizeAssets,
+      sizeUsd: rawToUsd(
+        sizeAssets,
+        loanMeta.decimals,
+        loanPrices.get(loanAddress.toLowerCase()) ?? null
+      ),
+      listed: typeof row.listed === 'boolean' ? row.listed : null,
+    });
+  }
+
+  mapped.sort((a, b) => (b.sizeUsd ?? 0) - (a.sizeUsd ?? 0));
+  logger.debug('Fetched Midnight markets', { chainId, count: mapped.length });
+  return { markets: mapped, warning };
+}
+
+export type MidnightBookLevelView = {
+  tick: number;
+  priceWad: string;
+  units: string;
+  assets: string;
+  count: number;
+  rate: number | null;
+};
+
+export type MidnightMarketDetail = {
+  marketId: string;
+  chainId: number;
+  midnight: string | null;
+  marketFamilyId: string | null;
+  loanSymbol: string;
+  loanAddress: string;
+  loanDecimals: number;
+  collaterals: MidnightCollateral[];
+  collateralLabel: string;
+  lltvLabel: string;
+  maturity: number;
+  tenorSeconds: number;
+  tenorLabel: string;
+  rcfThreshold: string | null;
+  enterGate: string | null;
+  liquidatorGate: string | null;
+  totalUnits: string | null;
+  tickGranularity: number | null;
+  currentSettlementFeeCbp: string | null;
+  continuousFeeRate: string | null;
+  lastIndexedBlock: string | null;
+  asks: MidnightBookLevelView[];
+  bids: MidnightBookLevelView[];
+  bestLendRate: number | null;
+  bestBorrowRate: number | null;
+  /** Open ask size, loan-token raw. Not filled deposits. */
+  lendDepthAssets: string;
+  /** Open bid size, loan-token raw. Not filled borrows. */
+  borrowDepthAssets: string;
+  /** Sum of position credit, loan-token raw. Null when the scan did not finish. */
+  lenderCredit: string | null;
+  /** Sum of position debt, loan-token raw. Null when the scan did not finish. */
+  borrowerDebt: string | null;
+  lendPositionCount: number;
+  borrowPositionCount: number;
+  /** Daily APR and outstanding loans, newest last. Empty when history is unavailable. */
+  history: MidnightHistoryPoint[];
+  /** False when the history read failed. An empty series with this true means no takes yet. */
+  historyAvailable: boolean;
+  /** Live loan-token USD price (null when unknown); values the live headline. */
+  loanPriceUsd: number | null;
+};
+
+type MidnightMarketConfig = {
+  chain_id?: number;
+  market_id?: string;
+  market_family_id?: string;
+  loan_token?: string;
+  collaterals?: MidnightBookCollateral[];
+  maturity?: number | string;
+  rcf_threshold?: string;
+  enter_gate?: string;
+  liquidator_gate?: string;
+};
+
+type MidnightMarketState = {
+  chain_id?: number;
+  market_id?: string;
+  market_family_id?: string;
+  total_units?: string;
+  tick_granularity?: number;
+  current_settlement_fee_cbp?: string;
+  continuous_fee_rate?: string;
+  last_indexed_block?: string;
+};
+
+type RestWrap<T> = { data?: T };
+
+type MidnightPositionRow = {
+  credit?: string;
+  debt?: string;
+  type?: string;
+  collaterals?: Array<{ token?: string; amount?: string }>;
+};
+
+type MidnightPositionsPage = {
+  cursor?: string | null;
+  data?: MidnightPositionRow[];
+};
+
+const POSITIONS_PAGE_LIMIT = 100;
+const POSITIONS_MAX_PAGES = 20;
+
+function addRaw(total: bigint, raw: string | null | undefined): bigint {
+  if (!raw) return total;
+  try {
+    return total + BigInt(raw);
+  } catch {
+    return total;
+  }
+}
+
+/** Sum lender credit, borrower debt, and posted collateral across one positions page. */
+export function sumMidnightPositionRows(rows: MidnightPositionRow[]): {
+  lenderCredit: bigint;
+  borrowerDebt: bigint;
+  lendCount: number;
+  borrowCount: number;
+  collateralByToken: Map<string, bigint>;
+} {
+  let lenderCredit = 0n;
+  let borrowerDebt = 0n;
+  let lendCount = 0;
+  let borrowCount = 0;
+  const collateralByToken = new Map<string, bigint>();
+  for (const row of rows) {
+    if (row.type === 'lend') lendCount += 1;
+    else if (row.type === 'borrow') borrowCount += 1;
+    lenderCredit = addRaw(lenderCredit, row.credit);
+    borrowerDebt = addRaw(borrowerDebt, row.debt);
+    for (const collateral of row.collaterals ?? []) {
+      if (!collateral.token) continue;
+      const key = collateral.token.toLowerCase();
+      collateralByToken.set(key, addRaw(collateralByToken.get(key) ?? 0n, collateral.amount));
+    }
+  }
+  return { lenderCredit, borrowerDebt, lendCount, borrowCount, collateralByToken };
+}
+
+async function fetchMidnightPositionTotals(marketId: string): Promise<{
+  lenderCredit: string;
+  borrowerDebt: string;
+  lendPositionCount: number;
+  borrowPositionCount: number;
+  collateralByToken: Map<string, bigint>;
+} | null> {
+  let cursor: string | null = null;
+  let lenderCredit = 0n;
+  let borrowerDebt = 0n;
+  let lendPositionCount = 0;
+  let borrowPositionCount = 0;
+  const collateralByToken = new Map<string, bigint>();
+
+  for (let page = 0; page < POSITIONS_MAX_PAGES; page += 1) {
+    const params = new URLSearchParams({ limit: String(POSITIONS_PAGE_LIMIT) });
+    if (cursor) params.set('cursor', cursor);
+    const body = await fetchMidnightRest<MidnightPositionsPage>(
+      `/v0/midnight/markets/${marketId}/positions?${params.toString()}`
+    );
+    if (body == null) {
+      logger.warn('Midnight position page missing', { marketId, page });
+      return null;
+    }
+    const summed = sumMidnightPositionRows(body.data ?? []);
+    lenderCredit += summed.lenderCredit;
+    borrowerDebt += summed.borrowerDebt;
+    lendPositionCount += summed.lendCount;
+    borrowPositionCount += summed.borrowCount;
+    for (const [token, amount] of summed.collateralByToken) {
+      collateralByToken.set(token, (collateralByToken.get(token) ?? 0n) + amount);
+    }
+    cursor = body.cursor ?? null;
+    if (!cursor) {
+      return {
+        lenderCredit: lenderCredit.toString(),
+        borrowerDebt: borrowerDebt.toString(),
+        lendPositionCount,
+        borrowPositionCount,
+        collateralByToken,
+      };
+    }
+  }
+
+  logger.warn('Midnight position list exceeded page cap', { marketId });
+  return null;
+}
+
+async function fetchMidnightRest<T>(
+  path: string,
+  timeoutMs: number = MIDNIGHT_FETCH_TIMEOUT_MS
+): Promise<T | null> {
+  const res = await fetch(`${MORPHO_REST_ORIGIN}${path}`, {
+    cache: 'no-store',
+    signal: AbortSignal.timeout(Math.max(1, timeoutMs)),
+  });
+  if (res.status === 404) return null;
+  if (!res.ok) {
+    throw new Error(`Midnight HTTP ${res.status} (${path})`);
+  }
+  return res.json() as Promise<T>;
+}
+
+function gateOrNull(addr: string | null | undefined): string | null {
+  if (!addr || isZeroAddress(addr)) return null;
+  return addr;
+}
+
+function mapBookLevels(
+  levels: MidnightBookLevel[] | undefined,
+  tenorSeconds: number
+): MidnightBookLevelView[] {
+  const out: MidnightBookLevelView[] = [];
+  for (const level of levels ?? []) {
+    if (!level.price || !level.assets) continue;
+    out.push({
+      tick: level.tick ?? 0,
+      priceWad: level.price,
+      units: level.units ?? '0',
+      assets: level.assets,
+      count: level.count ?? 0,
+      rate: midnightPriceToApr(level.price, tenorSeconds),
+    });
+  }
+  return out;
+}
+
+async function mapCollaterals(
+  raw: MidnightBookCollateral[] | undefined,
+  chainId: number,
+  loanDecimals: number,
+  loanSpotUsd: number | null
+): Promise<MidnightCollateral[]> {
+  const entries = (raw ?? []).filter((c): c is MidnightBookCollateral & { token: string } =>
+    Boolean(c.token)
+  );
+
+  return Promise.all(
+    entries.map(async (c) => {
+      const meta = await resolveTokenMeta(c.token, chainId);
+      const oracle = c.oracle ?? '';
+      let oracleTimestampData: OracleTimestampData | null = null;
+      let oraclePrice: OraclePriceSnapshot | null = null;
+
+      if (chainId === BASE_CHAIN_ID && oracle) {
+        const decoded = await withFallback(
+          (async () => {
+            const collateralSpotUsd = await withFallback(
+              fetchAssetUsdPrice(c.token, chainId),
+              SPOT_PRICE_TIMEOUT_MS,
+              null
+            );
+            const price = await getOraclePriceSnapshot({
+              oracleAddress: oracle,
+              loanDecimals,
+              collateralDecimals: meta.decimals,
+              spotCollateralUsd: collateralSpotUsd,
+              spotLoanUsd: loanSpotUsd,
+            });
+            const timestamp =
+              price && price.kind !== 'error'
+                ? oracleTimestampFromFeeds(price.feeds)
+                : await getOracleTimestampData(oracle as Address);
+            return { price, timestamp };
+          })(),
+          COLLATERAL_ORACLE_TIMEOUT_MS,
+          null
+        );
+        if (!decoded) {
+          logger.warn('Midnight collateral oracle read timed out', { oracle });
+        }
+        oraclePrice = decoded?.price ?? null;
+        oracleTimestampData = decoded?.timestamp ?? null;
+      }
+
+      return {
+        token: c.token,
+        symbol: meta.symbol,
+        decimals: meta.decimals,
+        lltv: c.lltv ?? '0',
+        liquidationCursor: c.liquidation_cursor ?? '0',
+        oracle,
+        oracleTimestampData,
+        oraclePrice,
+      };
+    })
+  );
+}
+
+const HISTORY_DAYS = 180;
+const HISTORY_PAGE_LIMIT = 1000;
+const HISTORY_MAX_PAGES = 30;
+const DAY_SECONDS = 86_400;
+
+export type MidnightHistoryEvent = {
+  id?: string;
+  event_type?: string;
+  created_at?: number;
+  data?: {
+    assets?: string | null;
+    units?: string | null;
+    total_units_delta?: string | null;
+    repaid_units?: string | null;
+  };
+};
+
+/**
+ * Raw transactions behind a market's history. Refreshed within the app-wide
+ * 30s TTL by fetching only events newer than `newestSec` — a full 180-day
+ * re-scan (up to 30 pages) every 30s would be too heavy. Points are rebuilt
+ * from these events and the live `total_units` on every request.
+ */
+type HistorySnapshot = {
+  fetchedAt: number;
+  /** Start of the window the events cover (UTC day). */
+  windowStart: number;
+  events: MidnightHistoryEvent[];
+  /** Newest event timestamp seen; the next refresh pages from here. */
+  newestSec: number;
+  /** False when the scan stopped before `windowStart` (partial first days are dropped). */
+  complete: boolean;
+  priceByDay: Map<number, number>;
+  available: boolean;
+  /**
+   * Freshness window for this snapshot. A failed read is held only
+   * HISTORY_FAILURE_HOLD_MS (not the 30s TTL): long enough to stop a burst of
+   * requests each restarting the scan, short enough that a recovered endpoint
+   * is retried promptly.
+   */
+  holdMs?: number;
+};
+
+const HISTORY_FAILURE_HOLD_MS = 5_000;
+
+/**
+ * Most recently used first-out cap. Each entry can hold up to 180 days of raw
+ * events, so an unbounded map grows with every market id ever requested.
+ */
+const MAX_HISTORY_SNAPSHOTS = 48;
+const historySnapshots = new Map<string, HistorySnapshot>();
+
+function storeHistorySnapshot(key: string, snapshot: HistorySnapshot): void {
+  // Re-insert so the Map's insertion order is recency order.
+  historySnapshots.delete(key);
+  historySnapshots.set(key, snapshot);
+  while (historySnapshots.size > MAX_HISTORY_SNAPSHOTS) {
+    const oldest = historySnapshots.keys().next().value;
+    if (oldest === undefined) break;
+    historySnapshots.delete(oldest);
+  }
+}
+
+/** Resolves `fallback` when `promise` rejects or takes longer than `ms`. */
+async function withFallback<T, F>(promise: Promise<T>, ms: number, fallback: F): Promise<T | F> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<F>((resolve) => {
+    timer = setTimeout(() => resolve(fallback), ms);
+  });
+  try {
+    return await Promise.race([promise.catch(() => fallback), timeout]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/** Spot USD is optional display data. */
+const SPOT_PRICE_TIMEOUT_MS = 5_000;
+/** Per-collateral oracle decode + feed directory; past this the panel shows no oracle data. */
+const COLLATERAL_ORACLE_TIMEOUT_MS = 12_000;
+
+function utcDay(timestamp: number): number {
+  return Math.floor(timestamp / DAY_SECONDS) * DAY_SECONDS;
+}
+
+function rawBigint(value: string | null | undefined): bigint {
+  if (!value || !/^-?\d+$/.test(value)) return 0n;
+  return BigInt(value);
+}
+
+/**
+ * How this event changes outstanding units.
+ *
+ * A book fill emits two legs carrying the same `total_units_delta`: the side
+ * buying units (`lend`, or `exit_borrow_secondary` when a borrower buys back
+ * debt) and the side selling them (`borrow` / `exit_lend_secondary`). Counting
+ * the buying leg's `total_units_delta` counts each fill once: a new loan is
+ * positive, a debt handover (`borrow` + `exit_borrow_secondary`) is 0, and two
+ * exits matched together are negative. Subtracting `units` on every
+ * `exit_borrow_secondary` inflated outstanding by billions on handovers.
+ *
+ * A direct repayment (`exit_borrow_primary`) and liquidations pay units back.
+ * A `roll` to Blue always comes with an `exit_borrow_primary` for the same
+ * units in the same tx, so it is not counted again.
+ */
+export function historyUnitChange(event: MidnightHistoryEvent): bigint {
+  const data = event.data;
+  switch (event.event_type) {
+    case 'lend':
+    case 'exit_borrow_secondary':
+      return rawBigint(data?.total_units_delta);
+    case 'exit_borrow_primary':
+      return -rawBigint(data?.units);
+    case 'partial_liquidation':
+    case 'full_liquidation':
+      return -rawBigint(data?.repaid_units);
+    default:
+      return 0n;
+  }
+}
+
+function vwapPriceWad(assets: bigint, units: bigint): string | null {
+  if (assets <= 0n || units <= 0n) return null;
+  return ((assets * 10n ** 18n) / units).toString();
+}
+
+function unitsToUsd(units: bigint, decimals: number, loanUsd: number | null): number | null {
+  if (loanUsd == null || !Number.isFinite(loanUsd)) return null;
+  // formatUnits keeps the token amount exact; only the USD product is a float.
+  const human = Number(formatUnits(units, decimals));
+  return Number.isFinite(human) ? human * loanUsd : null;
+}
+
+/**
+ * Daily APR and outstanding loans, same shape Morpho graphs.
+ * Outstanding at a UTC midnight is the live total minus every change after it.
+ * APR uses that day's volume-weighted take price and the time left until maturity.
+ * `complete` is false when paging stopped before the start of the window; those
+ * partial days are left off.
+ */
+export function buildMidnightHistory(
+  events: readonly MidnightHistoryEvent[],
+  args: {
+    maturitySec: number;
+    totalUnits: string | null;
+    nowSec: number;
+    loanDecimals: number;
+    loanUsd: number | null;
+    /** Loan token USD at each UTC day (Morpho `historicalPriceUsd`); spot fills gaps. */
+    loanUsdByDay?: ReadonlyMap<number, number>;
+    complete: boolean;
+  }
+): MidnightHistoryPoint[] {
+  // Outstanding is anchored on the live total. Without it the series is
+  // unknown (null), not zero — APR still comes from the fills.
+  const totalKnown = args.totalUnits != null && /^-?\d+$/.test(args.totalUnits);
+  const totalUnits = rawBigint(args.totalUnits);
+  const today = utcDay(args.nowSec);
+  const windowStart = today - (HISTORY_DAYS - 1) * DAY_SECONDS;
+  const seen = new Set<string>();
+  let oldest = Number.POSITIVE_INFINITY;
+
+  const changeByDay = new Map<number, bigint>();
+  const assetsByDay = new Map<number, bigint>();
+  const unitsByDay = new Map<number, bigint>();
+
+  for (const event of events) {
+    if (event.id) {
+      if (seen.has(event.id)) continue;
+      seen.add(event.id);
+    }
+    if (event.created_at == null || !Number.isFinite(event.created_at)) continue;
+    if (event.created_at < oldest) oldest = event.created_at;
+    const day = utcDay(event.created_at);
+    const change = historyUnitChange(event);
+    if (change !== 0n) {
+      changeByDay.set(day, (changeByDay.get(day) ?? 0n) + change);
+    }
+    if (event.event_type === 'lend') {
+      assetsByDay.set(day, (assetsByDay.get(day) ?? 0n) + rawBigint(event.data?.assets));
+      unitsByDay.set(day, (unitsByDay.get(day) ?? 0n) + rawBigint(event.data?.units));
+    }
+  }
+
+  let coverFrom = windowStart;
+  if (!args.complete && Number.isFinite(oldest)) {
+    coverFrom = utcDay(oldest) + DAY_SECONDS;
+  }
+  if (coverFrom > today) return [];
+
+  const points: MidnightHistoryPoint[] = [];
+  let later = 0n;
+  for (let day = today; day >= coverFrom; day -= DAY_SECONDS) {
+    const thisDay = changeByDay.get(day) ?? 0n;
+    const outstanding = totalUnits - later - thisDay;
+    later += thisDay;
+    const lendUnits = unitsByDay.get(day) ?? 0n;
+    const priceWad = vwapPriceWad(assetsByDay.get(day) ?? 0n, lendUnits);
+    points.push({
+      timestamp: day,
+      outstandingAssets: totalKnown ? outstanding.toString() : null,
+      // Each day's balance at that day's price, so the USD series is historical.
+      outstandingUsd: totalKnown
+        ? unitsToUsd(outstanding, args.loanDecimals, args.loanUsdByDay?.get(day) ?? args.loanUsd)
+        : null,
+      takePrice: takePriceNumber(priceWad),
+      apr: midnightPriceToApr(priceWad, args.maturitySec - day),
+      lendUnits: lendUnits.toString(),
+    });
+  }
+  points.reverse();
+  return points;
+}
+
+type MidnightTransactionsPage = {
+  cursor?: string | null;
+  data?: MidnightHistoryEvent[];
+};
+
+/**
+ * Total time history paging may take. The detail route runs inside the 40s
+ * server-cache loader timeout, so history must give up early and degrade to a
+ * partial (or last good) series instead of failing the whole market page.
+ */
+const HISTORY_BUDGET_MS = 20_000;
+
+const LOAN_PRICE_HISTORY_QUERY = gql`
+  query MidnightLoanPriceHistory($address: String!, $chainId: Int!, $since: Int!) {
+    assetByAddress(address: $address, chainId: $chainId) {
+      historicalPriceUsd(options: { interval: DAY, startTimestamp: $since }) {
+        x
+        y
+      }
+    }
+  }
+`;
+
+/**
+ * Runs after history paging (it needs the loan token), so it gets a short cap:
+ * paging's 20s budget + this must stay inside the 40s cache-loader timeout.
+ */
+const LOAN_PRICE_HISTORY_TIMEOUT_MS = 5_000;
+
+/** Daily loan-token USD keyed by UTC day. Empty on failure or timeout (spot is the fallback). */
+async function fetchLoanPriceByDay(
+  address: string,
+  chainId: number,
+  sinceSec: number
+): Promise<Map<number, number>> {
+  const out = new Map<number, number>();
+  try {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const timeout = new Promise<never>((_, reject) => {
+      timer = setTimeout(
+        () => reject(new Error('loan price history timed out')),
+        LOAN_PRICE_HISTORY_TIMEOUT_MS
+      );
+    });
+    const data = await Promise.race([
+      morphoGraphQLClient.request<{
+        assetByAddress?: {
+          historicalPriceUsd?: Array<{ x: number; y: number | null }> | null;
+        } | null;
+      }>(LOAN_PRICE_HISTORY_QUERY, { address, chainId, since: sinceSec }),
+      timeout,
+    ]).finally(() => clearTimeout(timer));
+    for (const point of data.assetByAddress?.historicalPriceUsd ?? []) {
+      if (point.y != null && Number.isFinite(point.y)) out.set(utcDay(point.x), point.y);
+    }
+  } catch (error) {
+    logger.warn('Midnight loan price history failed', { address, error });
+  }
+  return out;
+}
+
+async function pageMidnightTransactions(
+  marketId: string,
+  sinceSec: number,
+  deadline: number = Date.now() + HISTORY_BUDGET_MS
+): Promise<{ events: MidnightHistoryEvent[]; complete: boolean }> {
+  const events: MidnightHistoryEvent[] = [];
+  let cursor: string | null = null;
+  for (let page = 0; page < HISTORY_MAX_PAGES; page += 1) {
+    const remaining = deadline - Date.now();
+    if (remaining <= 0) {
+      logger.warn('Midnight history hit its time budget', { marketId, pages: page });
+      return { events, complete: false };
+    }
+    const params = new URLSearchParams({
+      limit: String(HISTORY_PAGE_LIMIT),
+      created_at_gte: String(sinceSec),
+    });
+    if (cursor) params.set('cursor', cursor);
+    const body = await fetchMidnightRest<MidnightTransactionsPage>(
+      `/v0/midnight/markets/${marketId}/transactions?${params.toString()}`,
+      Math.min(MIDNIGHT_FETCH_TIMEOUT_MS, remaining)
+    );
+    // A 404 on a market that exists means the history endpoint is unavailable,
+    // not that the market has no trades: fail so the page says so instead of
+    // caching "No rate history yet".
+    if (body == null) throw new Error('Midnight transactions endpoint returned 404');
+    const batch = body.data ?? [];
+    events.push(...batch);
+    cursor = body.cursor ?? null;
+    if (!cursor || batch.length === 0) {
+      return { events, complete: true };
+    }
+    const oldest = batch.reduce(
+      (min, event) =>
+        event.created_at != null && event.created_at < min ? event.created_at : min,
+      Number.POSITIVE_INFINITY
+    );
+    if (oldest < sinceSec) return { events, complete: true };
+  }
+  logger.warn('Midnight history exceeded page cap', { marketId });
+  return { events, complete: false };
+}
+
+export async function fetchMidnightMarketDetail(
+  marketId: string,
+  chainId: number = BASE_CHAIN_ID
+): Promise<MidnightMarketDetail> {
+  const id = marketId.trim();
+  if (!/^0x[0-9a-fA-F]{64}$/.test(id)) {
+    throw new AppError('Invalid Midnight market id', 400, 'INVALID_MARKET_ID');
+  }
+
+  const sinceSec = utcDay(Math.floor(Date.now() / 1000)) - (HISTORY_DAYS - 1) * DAY_SECONDS;
+  const key = id.toLowerCase();
+  // Freshness is decided once, before the fetches.
+  const snap = historySnapshots.get(key);
+  const fresh = snap != null && snap.fetchedAt + (snap.holdMs ?? API_CACHE_MAX_AGE_MS) > Date.now();
+  // Incremental refresh only extends a snapshot that already covers the whole
+  // window. An incomplete first scan (budget / page cap) is retried in full,
+  // or its older days would never be filled in.
+  const incremental =
+    !fresh && snap?.available === true && snap.complete && snap.windowStart <= sinceSec;
+  const historyTask: Promise<{ events: MidnightHistoryEvent[]; complete: boolean } | null> = fresh
+    ? Promise.resolve(null)
+    : pageMidnightTransactions(id, incremental ? snap!.newestSec : sinceSec).catch(
+        (error: unknown) => {
+          logger.warn('Midnight history failed', { marketId: id, error });
+          return null;
+        }
+      );
+  // History pages run alongside everything below (REST, token metadata,
+  // oracle decode) instead of before it, so the page stays inside the 40s
+  // loader timeout: total ≈ max(history budget, REST + enrichment budget).
+  const [marketWrap, stateWrap, bookWrap, positionTotals] = await Promise.all([
+    fetchMidnightRest<RestWrap<MidnightMarketConfig>>(`/v0/midnight/markets/${id}`),
+    fetchMidnightRest<RestWrap<MidnightMarketState>>(`/v0/midnight/markets/${id}/state`),
+    fetchMidnightRest<RestWrap<MidnightBook>>(`/v0/midnight/books/${id}?depth=80`),
+    fetchMidnightPositionTotals(id).catch((error: unknown) => {
+      logger.warn('Midnight position totals failed', { marketId: id, error });
+      return null;
+    }),
+  ]);
+
+  const config = marketWrap?.data;
+  const book = bookWrap?.data;
+  const state = stateWrap?.data;
+  const loanAddress = config?.loan_token ?? book?.loan_token;
+  const resolvedId = config?.market_id ?? book?.market_id ?? book?.id ?? id;
+  const resolvedChain = config?.chain_id ?? book?.chain_id ?? chainId;
+
+  if (!loanAddress || !resolvedId) {
+    throw new AppError('Midnight market not found', 404, 'MARKET_NOT_FOUND');
+  }
+
+  const maturity = Number(config?.maturity ?? book?.maturity ?? 0);
+  const nowSec = Math.floor(Date.now() / 1000);
+  const tenorSeconds = Math.max(0, maturity - nowSec);
+
+  // Past daily prices do not change: an incremental refresh tops up from the
+  // newest priced day instead of re-reading all 180 days every 30s.
+  const pricedDays = snap?.priceByDay.size ? [...snap.priceByDay.keys()] : [];
+  const lastPricedDay = pricedDays.length > 0 ? Math.max(...pricedDays) : null;
+  const priceSince = incremental && lastPricedDay != null ? lastPricedDay : sinceSec;
+  // Top-up always re-reads from the newest priced day, so today's point keeps
+  // moving with the market instead of freezing at the first fetch of the day.
+  // Fetched alongside paging even after a failure: the retry that succeeds
+  // needs daily prices, or every past day would be valued at today's spot.
+  const needPrices = !fresh;
+
+  const enrichment = (async () => {
+    const loanMeta = await resolveTokenMeta(loanAddress, resolvedChain);
+    const loanSpotUsd =
+      resolvedChain === BASE_CHAIN_ID
+        ? await withFallback(
+            fetchAssetUsdPrice(loanAddress, resolvedChain),
+            SPOT_PRICE_TIMEOUT_MS,
+            null
+          )
+        : null;
+    const collaterals = await mapCollaterals(
+      config?.collaterals ?? book?.collaterals,
+      resolvedChain,
+      loanMeta.decimals,
+      loanSpotUsd
+    );
+    return { loanMeta, loanSpotUsd, collaterals };
+  })();
+  const [{ loanMeta, loanSpotUsd, collaterals }, pagedHistory, fetchedPrices] = await Promise.all([
+    enrichment,
+    historyTask,
+    needPrices
+      ? fetchLoanPriceByDay(loanAddress, resolvedChain, priceSince)
+      : Promise.resolve(null),
+  ]);
+  const refreshedPrices =
+    incremental && snap && fetchedPrices
+      ? new Map(
+          [...snap.priceByDay, ...fetchedPrices].filter(([day]) => day >= utcDay(sinceSec))
+        )
+      : fetchedPrices;
+  const posted = positionTotals?.collateralByToken;
+  for (const collateral of collaterals) {
+    collateral.postedAssets = posted
+      ? (posted.get(collateral.token.toLowerCase()) ?? 0n).toString()
+      : null;
+  }
+  const pairCollaterals = selectMidnightCollaterals(collaterals, loanAddress);
+  const asks = mapBookLevels(book?.asks, tenorSeconds);
+  const bids = mapBookLevels(book?.bids, tenorSeconds);
+  let history: HistorySnapshot | null = null;
+  if (fresh && snap) {
+    history = snap;
+  } else if (pagedHistory && incremental && snap && pagedHistory.complete) {
+    // New events since the last refresh, appended (build dedupes by id).
+    const kept = snap.events.filter((e) => (e.created_at ?? 0) >= sinceSec);
+    const newest = pagedHistory.events.reduce(
+      (max, e) => Math.max(max, e.created_at ?? 0),
+      snap.newestSec
+    );
+    history = {
+      ...snap,
+      fetchedAt: Date.now(),
+      windowStart: sinceSec,
+      events: [...kept, ...pagedHistory.events],
+      newestSec: newest,
+      priceByDay: refreshedPrices && refreshedPrices.size > 0 ? refreshedPrices : snap.priceByDay,
+      holdMs: undefined,
+    };
+  } else if (pagedHistory && !incremental) {
+    history = {
+      fetchedAt: Date.now(),
+      windowStart: sinceSec,
+      events: pagedHistory.events,
+      newestSec: pagedHistory.events.reduce((max, e) => Math.max(max, e.created_at ?? 0), 0),
+      complete: pagedHistory.complete,
+      priceByDay: refreshedPrices ?? new Map(),
+      available: true,
+    };
+  } else if (snap?.available) {
+    // Refresh failed (or an incremental page hit its budget, leaving a gap):
+    // serve what we have, retry after the TTL; a gap forces a full scan next.
+    history = {
+      ...snap,
+      fetchedAt: Date.now(),
+      windowStart: pagedHistory && incremental ? Number.POSITIVE_INFINITY : snap.windowStart,
+      holdMs: HISTORY_FAILURE_HOLD_MS,
+    };
+  }
+  if (history) {
+    storeHistorySnapshot(key, history);
+  } else {
+    // No good series yet. Hold the failure briefly so a burst of requests
+    // does not each restart the multi-page scan, then retry.
+    storeHistorySnapshot(key, {
+      fetchedAt: Date.now(),
+      windowStart: sinceSec,
+      events: [],
+      newestSec: 0,
+      complete: false,
+      priceByDay: new Map(),
+      available: false,
+      holdMs: HISTORY_FAILURE_HOLD_MS,
+    });
+  }
+  const historyPoints =
+    history?.available
+      ? buildMidnightHistory(history.events, {
+          maturitySec: maturity,
+          totalUnits: state?.total_units ?? null,
+          nowSec,
+          loanDecimals: loanMeta.decimals,
+          loanUsd: loanSpotUsd,
+          loanUsdByDay: history.priceByDay,
+          complete: history.complete,
+        })
+      : [];
+
+  const detail: MidnightMarketDetail = {
+    marketId: resolvedId,
+    chainId: resolvedChain,
+    midnight: book?.midnight ?? null,
+    marketFamilyId: config?.market_family_id ?? state?.market_family_id ?? null,
+    loanSymbol: loanMeta.symbol,
+    loanAddress,
+    loanDecimals: loanMeta.decimals,
+    collaterals,
+    collateralLabel: pairCollaterals.map((c) => c.symbol).join(', ') || '—',
+    lltvLabel: pairCollaterals.map((c) => formatLltvWad(c.lltv)).join(' / ') || '—',
+    maturity,
+    tenorSeconds,
+    tenorLabel: formatTenorLabel(tenorSeconds),
+    rcfThreshold: config?.rcf_threshold ?? book?.rcf_threshold ?? null,
+    enterGate: gateOrNull(config?.enter_gate ?? book?.enter_gate),
+    liquidatorGate: gateOrNull(config?.liquidator_gate ?? book?.liquidator_gate),
+    totalUnits: state?.total_units ?? null,
+    tickGranularity: state?.tick_granularity ?? null,
+    currentSettlementFeeCbp: state?.current_settlement_fee_cbp ?? null,
+    continuousFeeRate: state?.continuous_fee_rate ?? null,
+    lastIndexedBlock: state?.last_indexed_block ?? null,
+    asks,
+    bids,
+    bestLendRate: asks[0]?.rate ?? null,
+    bestBorrowRate: bids[0]?.rate ?? null,
+    lendDepthAssets: sumAssets(book?.asks).toString(),
+    borrowDepthAssets: sumAssets(book?.bids).toString(),
+    lenderCredit: positionTotals?.lenderCredit ?? null,
+    borrowerDebt: positionTotals?.borrowerDebt ?? null,
+    lendPositionCount: positionTotals?.lendPositionCount ?? 0,
+    borrowPositionCount: positionTotals?.borrowPositionCount ?? 0,
+    history: historyPoints,
+    historyAvailable: history?.available ?? false,
+    loanPriceUsd: loanSpotUsd,
+  };
+
+  logger.debug('Fetched Midnight market detail', { marketId: resolvedId, chainId: resolvedChain });
+  return detail;
+}

@@ -1,0 +1,330 @@
+'use client';
+
+import { useMemo, useState } from 'react';
+import { CollapsibleCard } from '@/components/ui/collapsible-card';
+import { Skeleton } from '@/components/ui/skeleton';
+import { CuratorPanel } from '@/components/morpho/CuratorChrome';
+import {
+  LineChart,
+  Line,
+  XAxis,
+  YAxis,
+  CartesianGrid,
+  Tooltip,
+  ResponsiveContainer,
+} from 'recharts';
+import { useVaultHistory } from '@/lib/hooks/useVaultHistory';
+import { TimeRangeFilter } from '@/components/charts/TimeRangeFilter';
+import {
+  MetricModeFilter,
+  type VaultHistoryMetric,
+} from '@/components/charts/MetricModeFilter';
+import { UsdTokenModeFilter, type AmountUnit } from '@/components/charts/UsdTokenModeFilter';
+import { filterDataByRange, type TimeRange } from '@/lib/utils/date-filter';
+import {
+  formatUtcChartTick,
+  formatUtcTooltipDate,
+  utcDayStartMs,
+} from '@/lib/utils/utc-calendar';
+import { RateAverages } from '@/components/morpho/RateAverages';
+import {
+  formatCompactNumber,
+  formatCompactUSD,
+  formatFullUSD,
+  formatPercentage,
+  formatRawTokenAmount,
+} from '@/lib/format/number';
+import {
+  getTokenDisplayDecimals,
+  resolveAssetDecimals,
+} from '@/lib/format/asset-decimals';
+
+interface VaultOverviewHistoryChartProps {
+  vaultAddress: string;
+  /** Collapse behind a chevron header (default closed). */
+  collapsible?: boolean;
+  defaultOpen?: boolean;
+}
+
+const METRIC_TITLES: Record<VaultHistoryMetric, string> = {
+  supplied: 'TVL',
+  sharePrice: 'Price per share',
+  apy: 'Net APY',
+};
+
+function rawPointsToChart(
+  points: Array<{ date: string; value: string }>,
+  range: TimeRange
+): Array<{ date: string; value: number; raw: string }> {
+  return filterDataByRange(points, range).map((p) => {
+    try {
+      return { date: p.date, value: Number(BigInt(p.value)), raw: p.value };
+    } catch {
+      return { date: p.date, value: Number(p.value), raw: p.value };
+    }
+  });
+}
+
+function computeZoomedYDomain(
+  points: ReadonlyArray<{ value: number }>,
+  paddingRatio = 0.08
+): [number, number] | ['auto', 'auto'] {
+  if (points.length === 0) return ['auto', 'auto'];
+
+  const values = points.map((p) => p.value).filter((v) => Number.isFinite(v));
+  if (values.length === 0) return ['auto', 'auto'];
+
+  const min = Math.min(...values);
+  const max = Math.max(...values);
+
+  if (min === max) {
+    const pad = Math.max(Math.abs(min) * 0.05, min === 0 ? 1 : 0.01);
+    return [min - pad, max + pad];
+  }
+
+  const span = max - min;
+  const padding = span * paddingRatio;
+  return [min - padding, max + padding];
+}
+
+function formatCompactTokenAxis(rawValue: number, chainDecimals: number): string {
+  const human = rawValue / 10 ** chainDecimals;
+  return formatCompactNumber(human);
+}
+
+/**
+ * Pick how many fraction digits y-axis ticks need so adjacent ticks are
+ * distinguishable. Share-price series often span tiny ranges (e.g. a cbBTC
+ * vault moving from 1.00012 to 1.00038 per share), where fixed 2-decimal
+ * formatting renders every tick identically.
+ */
+function axisFractionDigits(domain: [number, number] | ['auto', 'auto']): number {
+  if (typeof domain[0] !== 'number' || typeof domain[1] !== 'number') return 2;
+  const span = Math.abs(domain[1] - domain[0]);
+  if (!Number.isFinite(span) || span <= 0) return 2;
+  // ~4-5 ticks per axis; each tick step needs one significant digit.
+  const digits = Math.ceil(-Math.log10(span / 4));
+  return Math.min(8, Math.max(0, digits));
+}
+
+function formatSharePriceAxis(
+  value: number,
+  unit: AmountUnit,
+  fractionDigits: number
+): string {
+  const formatted = value.toLocaleString('en-US', {
+    minimumFractionDigits: fractionDigits,
+    maximumFractionDigits: fractionDigits,
+  });
+  return unit === 'usd' ? `$${formatted}` : formatted;
+}
+
+export function VaultOverviewHistoryChart({
+  vaultAddress,
+  collapsible = false,
+  defaultOpen = false,
+}: VaultOverviewHistoryChartProps) {
+  const [open, setOpen] = useState(defaultOpen);
+  const fetchEnabled = !collapsible || open;
+  const { data, isLoading, error } = useVaultHistory(vaultAddress, {
+    enabled: fetchEnabled,
+  });
+  const [metric, setMetric] = useState<VaultHistoryMetric>('supplied');
+  const [range, setRange] = useState<TimeRange>('all');
+  const [amountUnit, setAmountUnit] = useState<AmountUnit>('token');
+
+  const hiddenMetrics = useMemo((): VaultHistoryMetric[] => {
+    if (!data?.series) return [];
+    return data.series.apy.length === 0 ? ['apy'] : [];
+  }, [data?.series]);
+  const chartMetric: VaultHistoryMetric = hiddenMetrics.includes(metric)
+    ? 'supplied'
+    : metric;
+
+  const chainDecimals = data
+    ? resolveAssetDecimals(data.assetSymbol, data.assetDecimals)
+    : 18;
+  const displayDecimals = data
+    ? getTokenDisplayDecimals(data.assetSymbol, chainDecimals)
+    : 6;
+
+  const chartPoints = useMemo(() => {
+    if (!data?.series) return [];
+
+    const { series } = data;
+
+    if (chartMetric === 'apy') {
+      return filterDataByRange(series.apy ?? [], range).map((p) => ({
+        date: p.date,
+        value: p.value,
+        raw: String(p.value),
+      }));
+    }
+
+    if (chartMetric === 'sharePrice') {
+      const shareSeries =
+        amountUnit === 'usd' ? series.sharePriceUsd ?? [] : series.sharePrice ?? [];
+      return filterDataByRange(shareSeries, range).map((p) => ({
+        date: p.date,
+        value: p.value,
+        raw: String(p.value),
+      }));
+    }
+
+    const useUsd = amountUnit === 'usd';
+
+    if (useUsd) {
+      return filterDataByRange(series.suppliedUsd ?? [], range).map((p) => ({
+        date: p.date,
+        value: p.value,
+        raw: String(p.value),
+      }));
+    }
+    return rawPointsToChart(series.supplied ?? [], range);
+  }, [data, chartMetric, range, amountUnit]);
+
+  // Trailing averages use the whole series, not the selected range (same as
+  // the Blue market Rates breakdown), so 90D stays 90D when zoomed to 7D.
+  const apyAveragePoints = useMemo(
+    () =>
+      chartMetric === 'apy'
+        ? (data?.series.apy ?? []).map((p) => ({ x: utcDayStartMs(p.date) / 1000, y: p.value }))
+        : [],
+    [data?.series.apy, chartMetric]
+  );
+
+  const yDomain = useMemo(
+    () => computeZoomedYDomain(chartPoints),
+    [chartPoints]
+  );
+
+  const showUnitToggle = chartMetric === 'supplied' || chartMetric === 'sharePrice';
+
+  const sharePriceAxisDigits = useMemo(
+    () => axisFractionDigits(yDomain),
+    [yDomain]
+  );
+
+  const yAxisFormatter = (value: number) => {
+    if (chartMetric === 'apy') return formatPercentage(value, 0);
+    if (chartMetric === 'sharePrice') {
+      return formatSharePriceAxis(value, amountUnit, sharePriceAxisDigits);
+    }
+    if (amountUnit === 'usd') return formatCompactUSD(value);
+    return formatCompactTokenAxis(value, chainDecimals);
+  };
+
+  const formatTooltipValue = (value: number, raw: string) => {
+    if (chartMetric === 'apy') return formatPercentage(value, 2);
+    if (chartMetric === 'sharePrice') {
+      if (amountUnit === 'usd') return formatFullUSD(value, 6);
+      const symbol = data?.assetSymbol ?? '';
+      return `${value.toLocaleString('en-US', { maximumFractionDigits: 8 })} ${symbol}`.trim();
+    }
+    if (amountUnit === 'usd') return formatFullUSD(value, 2);
+    try {
+      return `${formatRawTokenAmount(BigInt(raw), chainDecimals, displayDecimals)} ${data?.assetSymbol ?? ''}`.trim();
+    } catch {
+      return raw;
+    }
+  };
+
+  const formatXAxisLabel = (tickItem: string) => formatUtcChartTick(tickItem);
+
+  const chartFilters = (
+    <div className="flex flex-wrap items-center gap-2">
+      <MetricModeFilter value={chartMetric} onChange={setMetric} hidden={hiddenMetrics} />
+      {showUnitToggle && (
+        <UsdTokenModeFilter value={amountUnit} onChange={setAmountUnit} />
+      )}
+      <TimeRangeFilter value={range} onChange={setRange} />
+    </div>
+  );
+
+  const chartBody = !fetchEnabled ? null : isLoading ? (
+    <Skeleton className="h-52 w-full" />
+  ) : error ? (
+    <p className="text-sm text-red-600 dark:text-red-400">
+      {error instanceof Error ? error.message : 'Failed to load history'}
+    </p>
+  ) : (
+    <div className="space-y-2">
+      {/* Averages use the whole series, so they stay when the range is empty. */}
+      {chartMetric === 'apy' && apyAveragePoints.length > 0 && (
+        <RateAverages points={apyAveragePoints} />
+      )}
+      {chartPoints.length === 0 ? (
+        <div className="flex h-52 items-center justify-center text-sm text-muted-foreground">
+          No historical data for this range
+        </div>
+      ) : (
+        <ResponsiveContainer width="100%" height={240}>
+          <LineChart data={chartPoints} margin={{ top: 8, right: 12, left: 4, bottom: 0 }}>
+            <CartesianGrid strokeDasharray="3 3" vertical={false} />
+            <XAxis
+              dataKey="date"
+              tickFormatter={formatXAxisLabel}
+              tick={{ fontSize: 10 }}
+              minTickGap={32}
+              axisLine={false}
+              tickLine={false}
+            />
+            <YAxis
+              domain={yDomain}
+              tickFormatter={(v) => yAxisFormatter(Number(v))}
+              tick={{ fontSize: 10 }}
+              width={72}
+              tickCount={5}
+              axisLine={false}
+              tickLine={false}
+            />
+            <Tooltip
+              content={({ active, payload, label }) => {
+                if (!active || !payload?.[0]) return null;
+                const entry = payload[0].payload as { value: number; raw?: string };
+                const value = entry.value;
+                const raw = entry.raw ?? String(value);
+                return (
+                  <div className="rounded-lg border bg-background p-2 shadow-md">
+                    <p className="mb-1 text-xs font-medium">
+                      {formatUtcTooltipDate(String(label ?? ''))}
+                    </p>
+                    <p className="text-xs">{formatTooltipValue(value, raw)}</p>
+                  </div>
+                );
+              }}
+            />
+            <Line
+              type="monotone"
+              dataKey="value"
+              stroke="#3b82f6"
+              strokeWidth={2}
+              dot={false}
+            />
+          </LineChart>
+        </ResponsiveContainer>
+      )}
+    </div>
+  );
+
+  const title = data ? METRIC_TITLES[chartMetric] : 'History';
+
+  if (collapsible) {
+    return (
+      <CollapsibleCard
+        title="History"
+        headerRight={fetchEnabled ? chartFilters : undefined}
+        defaultOpen={defaultOpen}
+        onOpenChange={setOpen}
+      >
+        {chartBody}
+      </CollapsibleCard>
+    );
+  }
+
+  return (
+    <CuratorPanel title={title} actions={chartFilters}>
+      <div className="p-4">{chartBody}</div>
+    </CuratorPanel>
+  );
+}

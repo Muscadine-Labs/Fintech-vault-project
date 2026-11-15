@@ -1,0 +1,939 @@
+'use client';
+
+import { useState, useEffect, useMemo, useCallback } from 'react';
+import { useElementWidth } from '@/hooks/useElementWidth';
+import {
+  formatSmartCurrency,
+  formatPercentage,
+  formatCurrency,
+  formatChartUsdAxisValue,
+  formatChartTokenAxisValue,
+  formatSharePriceAxisTokenValue,
+  formatVaultChartTokenAmount,
+  formatSharePriceTokenAmount,
+  formatSharePriceUsd,
+  formatVaultDetailTokenAmount,
+} from '@/lib/formatter';
+import { calculateYAxisDomain } from '@/lib/vault-utils';
+import { CHART_MARGIN, axisWidthForLabels, evenTimeTicks, maxTimeTicksForWidth, timeWeightedAverage, VAULT_DETAIL_CHART_HEIGHT_CLASS, VAULT_DETAIL_CHART_MIN_HEIGHT } from '@/lib/chart-utils';
+import { logger } from '@/lib/logger';
+import { MorphoVaultData } from '@/types/vault';
+import { VaultLiquidityInfo } from './VaultLiquidityInfo';
+import { VaultApyInfo } from './VaultApyInfo';
+import { VaultAllocations } from './VaultAllocations';
+import { VaultSection } from './VaultSectionNav';
+import VaultRiskFacts from './VaultRiskFacts';
+import VaultDetails from './VaultDetails';
+import { useVaultAllocations } from '@/hooks/useVaultAllocations';
+import { formatSharePercent } from '@/lib/vault-details';
+import { useToast } from '@/contexts/ToastContext';
+import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, AreaChart, Area, ReferenceLine } from 'recharts';
+import { Skeleton } from '@/components/ui/Skeleton';
+import { useUnixTimestamp } from '@/hooks/useClientOnly';
+import {
+  resolveTotalUnderlyingLiquidityAssets,
+  resolveTotalUnderlyingLiquidityUsd,
+} from '@/lib/liquidity-utils';
+
+interface VaultOverviewProps {
+  vaultData: MorphoVaultData;
+}
+
+interface HistoryDataPoint {
+  timestamp: number;
+  date: string;
+  totalAssetsUsd: number;
+  totalAssets?: number;
+  apy: number;
+  /** False when Morpho had no APY for this bucket (`apy` is then a placeholder 0). */
+  hasApy?: boolean;
+  sharePrice?: number;
+  sharePriceUsd?: number;
+  assetPriceUsd?: number;
+}
+
+type ChartType = 'apy' | 'tvl' | 'sharePrice';
+
+function rawShareOf(partRaw: string | undefined, totalRaw: string | undefined): number | null {
+  try {
+    const total = BigInt(totalRaw || '0');
+    if (total <= BigInt(0)) return null;
+    // Morpho's liquidity figures can run slightly ahead of totalAssets; never show over 100%.
+    return Math.min(1, Number((BigInt(partRaw || '0') * BigInt(10_000)) / total) / 10_000);
+  } catch {
+    return null;
+  }
+}
+
+type Period = 'all' | '7d' | '30d' | '90d' | '1y';
+
+const VAULT_CHART_MARGIN = CHART_MARGIN;
+
+function formatTvlYAxisTick(
+  value: number,
+  valueType: 'usd' | 'token',
+  vaultData: MorphoVaultData
+): string {
+  if (valueType === 'usd') {
+    return formatChartUsdAxisValue(value);
+  }
+  return formatChartTokenAxisValue(
+    value,
+    vaultData.assetDecimals || 18,
+    vaultData.symbol
+  );
+}
+
+function formatSharePriceYAxisTick(
+  value: number,
+  valueType: 'usd' | 'token',
+  vaultData: MorphoVaultData
+): string {
+  if (valueType === 'usd') {
+    return formatChartUsdAxisValue(value);
+  }
+  return formatSharePriceAxisTokenValue(
+    value,
+    vaultData.assetDecimals || 18,
+    vaultData.symbol
+  );
+}
+
+/** Gutter wide enough for the longest tick on this axis, including the dollar sign. */
+function axisWidthForDomain(
+  domain: readonly number[] | undefined,
+  format: (value: number) => string
+): number {
+  const min = domain?.[0] ?? 0;
+  const max = domain?.[1] ?? min;
+  return axisWidthForLabels([format(min), format(max), format((min + max) / 2)]);
+}
+
+const PERIOD_SECONDS: Record<Period, number> = {
+  all: 0, // 0 means all data
+  '7d': 7 * 24 * 60 * 60,
+  '30d': 30 * 24 * 60 * 60,
+  '90d': 90 * 24 * 60 * 60,
+  '1y': 365 * 24 * 60 * 60,
+};
+const HOUR_SECONDS = 60 * 60;
+
+export default function VaultOverview({ vaultData }: VaultOverviewProps) {
+  const [period, setPeriod] = useState<Period>('all');
+  const [allHistoryData, setAllHistoryData] = useState<HistoryDataPoint[]>([]);
+  const [hourly30dData, setHourly30dData] = useState<HistoryDataPoint[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [chartType, setChartType] = useState<ChartType>('apy');
+  const [chartContainerRef, chartWidth] = useElementWidth<HTMLDivElement>();
+  const [valueType, setValueType] = useState<'usd' | 'token'>('token');
+  const { error: showErrorToast } = useToast();
+  const now = useUnixTimestamp();
+
+  // Headline liquidity: total underlying (idle + adapter + force-deallocatable)
+  const totalUnderlyingUsd = resolveTotalUnderlyingLiquidityUsd(
+    vaultData.liquidityBreakdown,
+    vaultData.currentLiquidity
+  );
+  const totalUnderlyingAssets = resolveTotalUnderlyingLiquidityAssets(
+    vaultData.liquidityBreakdown,
+    vaultData.liquidityAssets
+  );
+  const liquidityUsd = formatSmartCurrency(totalUnderlyingUsd, { alwaysTwoDecimals: true });
+  const liquidityRaw = formatVaultDetailTokenAmount(
+    totalUnderlyingAssets || '0',
+    vaultData.assetDecimals || 18,
+    vaultData.symbol
+  );
+
+  const liquidityShare = rawShareOf(totalUnderlyingAssets, vaultData.totalAssets);
+
+  // Format APY
+  const apyPercent = formatPercentage(vaultData.apy);
+
+  const ownAllocations = useVaultAllocations(vaultData.address, vaultData.chainId);
+
+  const chartEndTimestamp = useMemo(() => {
+    let maxTs = 0;
+    for (const series of [allHistoryData, hourly30dData]) {
+      if (series.length > 0) {
+        const last = series[series.length - 1]?.timestamp ?? 0;
+        if (last > maxTs) maxTs = last;
+      }
+    }
+    return maxTs || now;
+  }, [allHistoryData, hourly30dData, now]);
+
+  const hourly7dData = useMemo(() => {
+    if (hourly30dData.length === 0) return [];
+    const cutoff = chartEndTimestamp - PERIOD_SECONDS['7d'];
+    return hourly30dData.filter((point) => point.timestamp >= cutoff);
+  }, [hourly30dData, chartEndTimestamp]);
+
+  // Filter history data based on selected period and find first non-zero value
+  const historyData = useMemo(() => {
+    // Use hourly data for 7d and 30d periods, otherwise use daily data.
+    // Brand-new vaults often have hourly buckets before Morpho fills daily.
+    let sourceData = allHistoryData;
+    if (period === '7d' && hourly7dData.length > 0) {
+      sourceData = hourly7dData;
+    } else if (period === '30d' && hourly30dData.length > 0) {
+      sourceData = hourly30dData;
+    } else if (
+      (allHistoryData.length < 2 && hourly30dData.length > allHistoryData.length)
+    ) {
+      sourceData = hourly30dData;
+    }
+    let filtered = sourceData;
+    
+    if (period !== 'all' && sourceData.length > 0) {
+      const cutoffTimestamp = chartEndTimestamp - PERIOD_SECONDS[period];
+      filtered = sourceData.filter(d => d.timestamp >= cutoffTimestamp);
+    }
+    
+    // Find the first non-zero value based on chart type
+    // For APY chart, filter out zero APY values
+    // For TVL chart, filter out zero totalAssetsUsd/totalAssets values
+    if (filtered.length > 0) {
+      let firstNonZeroIndex = -1;
+      
+      if (chartType === 'apy') {
+        firstNonZeroIndex = filtered.findIndex(d => d.apy > 0);
+        // Missing avgNetApy (new vaults) would otherwise plot a fake 0% line.
+        if (firstNonZeroIndex === -1) return [];
+      } else if (chartType === 'tvl') {
+        firstNonZeroIndex = filtered.findIndex(d => {
+          if (valueType === 'usd') {
+            // Check totalAssetsUsd, or calculate from totalAssets * assetPriceUsd if available
+            if (d.totalAssetsUsd > 0) return true;
+            if (d.totalAssets && d.totalAssets > 0 && d.assetPriceUsd && d.assetPriceUsd > 0) {
+              return (d.totalAssets * d.assetPriceUsd) > 0;
+            }
+            return false;
+          }
+          return (d.totalAssets || 0) > 0;
+        });
+      } else if (chartType === 'sharePrice') {
+        firstNonZeroIndex = filtered.findIndex(d => {
+          if (valueType === 'usd') return (d.sharePriceUsd || 0) > 0;
+          return (d.sharePrice || 0) > 0;
+        });
+      }
+      
+      if (firstNonZeroIndex > 0) {
+        filtered = filtered.slice(firstNonZeroIndex);
+      }
+    }
+
+    // Recharts needs two points to draw a line; brand-new vaults may have one bucket.
+    if (chartType !== 'apy' && filtered.length === 1) {
+      const only = filtered[0];
+      filtered = [
+        { ...only, timestamp: only.timestamp - HOUR_SECONDS },
+        only,
+      ];
+    }
+    
+    return filtered;
+  }, [allHistoryData, hourly7dData, hourly30dData, period, chartType, valueType, chartEndTimestamp]);
+
+  // Buckets with no APY from Morpho become gaps the line bridges, not drops to 0%.
+  const apyChartData = useMemo(
+    () =>
+      chartType !== 'apy'
+        ? []
+        : historyData.map((d) => (d.hasApy === false ? { ...d, apy: null } : d)),
+    [historyData, chartType]
+  );
+
+  // Average APY over the selected period (dotted reference line, like Morpho's chart).
+  const averageApy = useMemo(() => {
+    if (chartType !== 'apy' || historyData.length < 2) return null;
+    return timeWeightedAverage(
+      historyData
+        .filter((d) => d.hasApy !== false)
+        .map((d) => ({ timestamp: d.timestamp, value: d.apy }))
+    );
+  }, [historyData, chartType]);
+
+  // Calculate Y-axis domain for APY chart
+  const apyYAxisDomain = useMemo(() => {
+    if (historyData.length === 0 || chartType !== 'apy') return undefined;
+    
+    const apyValues = historyData
+      .filter((d) => d.hasApy !== false)
+      .map((d) => d.apy)
+      .filter((v) => v !== null && v !== undefined && !isNaN(v));
+    if (apyValues.length === 0) return undefined;
+    
+    const domain = calculateYAxisDomain(apyValues, {
+      bottomPaddingPercent: 0.5,
+      topPaddingPercent: 0.2,
+      thresholdPercent: 0.01,
+    });
+    
+    if (!domain) return undefined;
+    
+    // If max APY is 0.01 (1%) or lower, ensure 0 is included
+    const maxApy = Math.max(...apyValues);
+    if (maxApy <= 0.01) {
+      return [0, domain[1]];
+    }
+    
+    return domain;
+  }, [historyData, chartType]);
+
+  // Memoize chart data for TVL chart to avoid recalculating on every render
+  const tvlChartData = useMemo(() => {
+    if (chartType !== 'tvl') return [];
+    return historyData.map(item => {
+      let usdValue = item.totalAssetsUsd;
+      // If totalAssetsUsd is 0 but totalAssets exists, calculate USD value from totalAssets * assetPriceUsd
+      if (valueType === 'usd' && usdValue === 0 && item.totalAssets && item.totalAssets > 0 && item.assetPriceUsd) {
+        usdValue = item.totalAssets * item.assetPriceUsd;
+      }
+      return {
+        ...item,
+        value: valueType === 'usd' ? usdValue : (item.totalAssets || 0),
+      };
+    });
+  }, [historyData, chartType, valueType]);
+
+  // Calculate Y-axis domain for Total Deposits chart
+  const tvlYAxisDomain = useMemo(() => {
+    if (tvlChartData.length === 0 || chartType !== 'tvl') return undefined;
+    
+    const values = tvlChartData.map(d => d.value).filter(v => v !== null && v !== undefined && !isNaN(v));
+    
+    return calculateYAxisDomain(values, {
+      bottomPaddingPercent: 0.12,
+      topPaddingPercent: 0.12,
+      filterPositiveOnly: true,
+    });
+  }, [tvlChartData, chartType]);
+
+  const sharePriceChartData = useMemo(() => {
+    if (chartType !== 'sharePrice') return [];
+    return historyData.map((item) => ({
+      ...item,
+      value: valueType === 'usd' ? (item.sharePriceUsd || 0) : (item.sharePrice || 0),
+    }));
+  }, [historyData, chartType, valueType]);
+
+  const sharePriceYAxisDomain = useMemo(() => {
+    if (sharePriceChartData.length === 0 || chartType !== 'sharePrice') return undefined;
+
+    const values = sharePriceChartData
+      .map((d) => d.value)
+      .filter((v) => v !== null && v !== undefined && !isNaN(v) && v > 0);
+
+    return calculateYAxisDomain(values, {
+      bottomPaddingPercent: 0.15,
+      topPaddingPercent: 0.15,
+      filterPositiveOnly: true,
+    });
+  }, [sharePriceChartData, chartType]);
+
+  // Fetch daily (all) and hourly (30d) history together so new vaults don't flash empty.
+  useEffect(() => {
+    const abortController = new AbortController();
+
+    const uniqueByTimestamp = (history: HistoryDataPoint[]) =>
+      history.filter(
+        (point, index, self) =>
+          index === self.findIndex((p) => p.timestamp === point.timestamp)
+      );
+
+    const fetchHistory = async () => {
+      setLoading(true);
+      try {
+        const [allResponse, hourlyResponse] = await Promise.all([
+          fetch(
+            `/api/vault/${vaultData.version}/${vaultData.address}/history?chainId=${vaultData.chainId}&period=all`,
+            { signal: abortController.signal }
+          ),
+          fetch(
+            `/api/vault/${vaultData.version}/${vaultData.address}/history?chainId=${vaultData.chainId}&period=30d`,
+            { signal: abortController.signal }
+          ),
+        ]);
+
+        if (!allResponse.ok) {
+          throw new Error(`Failed to fetch history: ${allResponse.status} ${allResponse.statusText}`);
+        }
+
+        const allData = await allResponse.json();
+        if (!allData || typeof allData !== 'object') {
+          throw new Error('Invalid history response format');
+        }
+
+        if (allData.history && Array.isArray(allData.history) && allData.history.length > 0) {
+          setAllHistoryData(uniqueByTimestamp(allData.history));
+        } else {
+          setAllHistoryData([]);
+        }
+
+        if (hourlyResponse.ok) {
+          const hourlyData = await hourlyResponse.json().catch(() => ({}));
+          if (hourlyData.history && Array.isArray(hourlyData.history) && hourlyData.history.length > 0) {
+            setHourly30dData(uniqueByTimestamp(hourlyData.history));
+          } else {
+            setHourly30dData([]);
+          }
+        } else {
+          setHourly30dData([]);
+        }
+      } catch (error) {
+        if (error instanceof Error && error.name === 'AbortError') return;
+        logger.error(
+          'Failed to fetch vault history data',
+          error instanceof Error ? error : new Error(String(error)),
+          { vaultAddress: vaultData.address, chainId: vaultData.chainId }
+        );
+        setAllHistoryData([]);
+        setHourly30dData([]);
+        showErrorToast('Failed to load vault history. Please refresh the page.', 5000);
+      } finally {
+        if (!abortController.signal.aborted) {
+          setLoading(false);
+        }
+      }
+    };
+
+    fetchHistory();
+    return () => abortController.abort();
+  }, [vaultData.address, vaultData.chainId, vaultData.version, showErrorToast]);
+
+  // Calculate available periods based on data range
+  const availablePeriods = useMemo(() => {
+    const series = allHistoryData.length > 0 ? allHistoryData : hourly30dData;
+    if (series.length === 0) return ['all' as Period];
+
+    const oldestTimestamp = series[0]?.timestamp || chartEndTimestamp;
+    const dataRangeSeconds = chartEndTimestamp - oldestTimestamp;
+    
+    const periods: Period[] = ['all'];
+    
+    // Only add periods that are <= the available data range
+    // Hide '1y' if vault was created in the last year (has less than 1 year of data)
+    // Only show '1y' if vault has 1 year or more of data (was not created in the last year)
+    if (dataRangeSeconds >= PERIOD_SECONDS['1y']) {
+      periods.push('1y');
+    }
+    if (dataRangeSeconds >= PERIOD_SECONDS['90d']) {
+      periods.push('90d');
+    }
+    if (dataRangeSeconds >= PERIOD_SECONDS['30d']) {
+      periods.push('30d');
+    }
+    if (dataRangeSeconds >= PERIOD_SECONDS['7d']) {
+      periods.push('7d');
+    }
+    
+    return periods;
+  }, [allHistoryData, hourly30dData, chartEndTimestamp]);
+
+  // Evenly spaced date ticks on a time axis: equal steps are equal distances on screen, and the
+  // step grows with the period so the labels fit the chart's measured width.
+  const xTicks = useMemo(() => {
+    if (historyData.length === 0) return undefined;
+    const first = historyData[0].timestamp;
+    const last = historyData[historyData.length - 1].timestamp;
+    // The y-axis gutter and margins take roughly 80px of the container.
+    const ticks = evenTimeTicks(first, last, maxTimeTicksForWidth(chartWidth - 80));
+    return ticks.length > 0 ? ticks : undefined;
+  }, [historyData, chartWidth]);
+
+  // Format date for tooltip - always shows accurate date/time
+  const formatTooltipDate = useCallback((timestamp: number | string) => {
+    const date = typeof timestamp === 'number' 
+      ? new Date(timestamp * 1000) 
+      : new Date(timestamp);
+    
+    if (period === '7d') {
+      // For 7 days, show date and time
+      const dateStr = date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+      const timeStr = date.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true });
+      return `${dateStr}, ${timeStr}`;
+    } else {
+      // For 30d, 90d, 1y, show month and day
+      return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+    }
+  }, [period]);
+
+  // Format date for chart X-axis labels - accepts timestamp in seconds
+  const formatDate = useCallback((timestamp: number | string) => {
+    // Handle both timestamp (number) and date string (for backwards compatibility)
+    const date = typeof timestamp === 'number' 
+      ? new Date(timestamp * 1000) 
+      : new Date(timestamp);
+    
+    // All periods show month and day
+    return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+  }, []);
+
+
+  return (
+    <div className="space-y-5">
+      {/* Performance Section */}
+      <div className="space-y-5">
+        {/* Current Performance */}
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 sm:gap-5 overflow-visible">
+          <div className="overflow-visible">
+            <div className="flex items-center gap-1.5 mb-1">
+              <p className="text-xs text-[var(--foreground-secondary)]">Net APY</p>
+              <VaultApyInfo
+                grossApy={vaultData.grossApy ?? vaultData.apy}
+                netApy={vaultData.apy}
+                performanceFee={vaultData.performanceFee ?? 0}
+                managementFee={vaultData.managementFee ?? 0}
+              />
+            </div>
+            <p className="text-2xl font-bold text-[var(--foreground)]">
+              {apyPercent}
+            </p>
+            {vaultData.apyChange !== undefined && vaultData.apyChange !== 0 && (
+              <p className={`text-xs mt-2 ${vaultData.apyChange > 0 ? 'text-[var(--success)]' : 'text-[var(--danger)]'}`}>
+                {vaultData.apyChange > 0 ? '↑' : '↓'} {formatPercentage(Math.abs(vaultData.apyChange))} from last period
+              </p>
+            )}
+          </div>
+          <div>
+            <p className="text-xs text-[var(--foreground-secondary)] mb-1">Total deposits</p>
+            <p className="text-xl sm:text-2xl font-bold text-[var(--foreground)]">
+              {formatVaultDetailTokenAmount(
+                vaultData.totalAssets || '0',
+                vaultData.assetDecimals || 18,
+                vaultData.symbol
+              )}
+            </p>
+            <p className="text-xs text-[var(--foreground-secondary)] mt-1">
+              {formatSmartCurrency(vaultData.totalValueLocked || 0, { alwaysTwoDecimals: true })}
+            </p>
+          </div>
+          <div className="overflow-visible">
+            <div className="flex items-center gap-1.5 mb-1">
+              <p className="text-xs text-[var(--foreground-secondary)]">Liquidity</p>
+              {vaultData.liquidityBreakdown && (
+                <VaultLiquidityInfo
+                  breakdown={vaultData.liquidityBreakdown}
+                  assetSymbol={vaultData.symbol}
+                  assetDecimals={vaultData.assetDecimals || 18}
+                />
+              )}
+            </div>
+            <p className="text-xl sm:text-2xl font-bold text-[var(--foreground)]">
+              {liquidityRaw}
+            </p>
+            <p className="text-xs text-[var(--foreground-secondary)] mt-1">
+              {liquidityUsd}
+              {liquidityShare !== null ? ` · ${formatSharePercent(liquidityShare)} of deposits` : ''}
+            </p>
+          </div>
+        </div>
+
+        <VaultSection id="vault-performance" title="Performance">
+        {/* Chart Type Selector */}
+        <div className="flex gap-2 border-b border-[var(--border-subtle)] overflow-x-auto overscroll-x-contain flex-nowrap scrollbar-hide [-webkit-overflow-scrolling:touch]">
+          <button
+            onClick={() => setChartType('apy')}
+            className={`shrink-0 px-4 py-2 text-sm font-medium transition-colors relative cursor-pointer touch-manipulation ${
+              chartType === 'apy'
+                ? 'text-[var(--foreground)]'
+                : 'text-[var(--foreground-secondary)] hover:text-[var(--foreground)]'
+            }`}
+          >
+            APY
+            {chartType === 'apy' && (
+              <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-[var(--primary)]" />
+            )}
+          </button>
+          <button
+            onClick={() => setChartType('tvl')}
+            className={`shrink-0 px-4 py-2 text-sm font-medium transition-colors relative cursor-pointer touch-manipulation ${
+              chartType === 'tvl'
+                ? 'text-[var(--foreground)]'
+                : 'text-[var(--foreground-secondary)] hover:text-[var(--foreground)]'
+            }`}
+          >
+            Total Deposits
+            {chartType === 'tvl' && (
+              <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-[var(--primary)]" />
+            )}
+          </button>
+          <button
+            onClick={() => setChartType('sharePrice')}
+            className={`shrink-0 px-4 py-2 text-sm font-medium transition-colors relative cursor-pointer touch-manipulation ${
+              chartType === 'sharePrice'
+                ? 'text-[var(--foreground)]'
+                : 'text-[var(--foreground-secondary)] hover:text-[var(--foreground)]'
+            }`}
+          >
+            Share Price
+            {chartType === 'sharePrice' && (
+              <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-[var(--primary)]" />
+            )}
+          </button>
+        </div>
+
+        {/* Chart panel */}
+        <div className="min-w-0">
+        {loading ? (
+          <div className="bg-[var(--surface-elevated)] rounded-lg border border-[var(--border-subtle)] p-2 sm:p-4">
+            {/* Controls Row */}
+            <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between mb-4">
+              {/* Period Selector */}
+              <div className="flex gap-2 overflow-x-auto overscroll-x-contain flex-nowrap scrollbar-hide [-webkit-overflow-scrolling:touch] min-w-0">
+                {availablePeriods.map((p) => (
+                  <button
+                    key={p}
+                    onClick={() => setPeriod(p)}
+                    className={`shrink-0 px-3 py-1.5 text-xs font-medium rounded-lg transition-colors cursor-pointer touch-manipulation ${
+                      period === p
+                        ? 'bg-[var(--primary)] text-white'
+                        : 'bg-[var(--surface-elevated)] text-[var(--foreground-secondary)] hover:text-[var(--foreground)]'
+                    }`}
+                  >
+                    {p === 'all' ? 'All' : p.toUpperCase()}
+                  </button>
+                ))}
+              </div>
+              
+              {/* Value Type Toggle - Total Deposits & Share Price */}
+              {(chartType === 'tvl' || chartType === 'sharePrice') && (
+                <div className="flex shrink-0 items-center gap-2 rounded-lg p-1 border border-[var(--border-subtle)] self-start sm:self-auto">
+                  <button
+                    onClick={() => setValueType('token')}
+                    className={`px-3 py-1.5 text-sm font-medium rounded-md transition-all cursor-pointer ${
+                      valueType === 'token'
+                        ? 'bg-[var(--primary)] text-white'
+                        : 'text-[var(--foreground-secondary)] hover:text-[var(--foreground)]'
+                    }`}
+                  >
+                    {vaultData.symbol || 'Token'}
+                  </button>
+                  <button
+                    onClick={() => setValueType('usd')}
+                    className={`px-3 py-1.5 text-sm font-medium rounded-md transition-all cursor-pointer ${
+                      valueType === 'usd'
+                        ? 'bg-[var(--primary)] text-white'
+                        : 'text-[var(--foreground-secondary)] hover:text-[var(--foreground)]'
+                    }`}
+                  >
+                    USD
+                  </button>
+                </div>
+              )}
+            </div>
+            <div className={VAULT_DETAIL_CHART_HEIGHT_CLASS}>
+              <div className="h-full flex flex-col justify-between">
+                {/* Y-axis labels area */}
+                <div className="flex justify-between mb-2">
+                  <Skeleton width="3rem" height="0.75rem" />
+                  <Skeleton width="3rem" height="0.75rem" />
+                </div>
+                {/* Chart area with wave pattern */}
+                <div className="flex-1 flex items-end justify-between gap-1 px-2">
+                  {[45, 52, 38, 60, 48, 55, 42, 58, 50, 47, 53, 40, 57, 45, 50, 48, 55, 42, 58, 45].map((heightPercent, index) => (
+                    <Skeleton
+                      key={index}
+                      width="100%"
+                      height={`${heightPercent}%`}
+                      className="rounded-t"
+                    />
+                  ))}
+                </div>
+                {/* X-axis labels area */}
+                <div className="flex justify-between mt-2">
+                  <Skeleton width="4rem" height="0.75rem" />
+                  <Skeleton width="4rem" height="0.75rem" />
+                </div>
+              </div>
+            </div>
+          </div>
+        ) : (historyData.length > 0) ? (
+          <div className="bg-[var(--surface-elevated)] rounded-lg border border-[var(--border-subtle)] p-2 sm:p-3">
+            {/* Controls Row */}
+            <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between mb-3">
+              {/* Period Selector */}
+              <div className="flex gap-2 overflow-x-auto overscroll-x-contain flex-nowrap scrollbar-hide [-webkit-overflow-scrolling:touch] min-w-0">
+                {availablePeriods.map((p) => (
+                  <button
+                    key={p}
+                    onClick={() => setPeriod(p)}
+                    className={`shrink-0 px-3 py-1.5 text-xs font-medium rounded-lg transition-colors cursor-pointer touch-manipulation ${
+                      period === p
+                        ? 'bg-[var(--primary)] text-white'
+                        : 'bg-[var(--surface-elevated)] text-[var(--foreground-secondary)] hover:text-[var(--foreground)]'
+                    }`}
+                  >
+                    {p === 'all' ? 'All' : p.toUpperCase()}
+                  </button>
+                ))}
+              </div>
+              
+              {/* Value Type Toggle - Total Deposits & Share Price */}
+              {(chartType === 'tvl' || chartType === 'sharePrice') && (
+                <div className="flex shrink-0 items-center gap-2 rounded-lg p-1 border border-[var(--border-subtle)] self-start sm:self-auto">
+                  <button
+                    onClick={() => setValueType('token')}
+                    className={`px-3 py-1.5 text-sm font-medium rounded-md transition-all cursor-pointer ${
+                      valueType === 'token'
+                        ? 'bg-[var(--primary)] text-white'
+                        : 'text-[var(--foreground-secondary)] hover:text-[var(--foreground)]'
+                    }`}
+                  >
+                    {vaultData.symbol || 'Token'}
+                  </button>
+                  <button
+                    onClick={() => setValueType('usd')}
+                    className={`px-3 py-1.5 text-sm font-medium rounded-md transition-all cursor-pointer ${
+                      valueType === 'usd'
+                        ? 'bg-[var(--primary)] text-white'
+                        : 'text-[var(--foreground-secondary)] hover:text-[var(--foreground)]'
+                    }`}
+                  >
+                    USD
+                  </button>
+                </div>
+              )}
+            </div>
+            <div ref={chartContainerRef} className={`w-full min-w-0 ${VAULT_DETAIL_CHART_HEIGHT_CLASS}`}>
+              <ResponsiveContainer width="100%" height="100%" minHeight={VAULT_DETAIL_CHART_MIN_HEIGHT} debounce={50}>
+                {chartType === 'apy' ? (
+                  <LineChart data={apyChartData} margin={VAULT_CHART_MARGIN}>
+                    <CartesianGrid strokeDasharray="3 3" stroke="var(--border-subtle)" />
+                    <XAxis 
+                      dataKey="timestamp" 
+                      tickFormatter={formatDate}
+                      stroke="var(--foreground-secondary)"
+                      style={{ fontSize: '12px' }}
+                      type="number"
+                      scale="time"
+                      domain={['dataMin', 'dataMax']}
+                      ticks={xTicks}
+                      interval={0}
+                      padding={{ left: 0, right: 0 }}
+                    />
+                    <YAxis 
+                      width={axisWidthForDomain(apyYAxisDomain, (value) => formatPercentage(value / 100))}
+                      orientation="left"
+                      tickMargin={4}
+                      domain={apyYAxisDomain}
+                      tickFormatter={(value) => {
+                        if (value === undefined || typeof value !== 'number') return '';
+                        return formatPercentage(value / 100);
+                      }}
+                      stroke="var(--foreground-secondary)"
+                      style={{ fontSize: '12px' }}
+                    />
+                    <Tooltip
+                      contentStyle={{
+                        backgroundColor: 'var(--surface-elevated)',
+                        border: '1px solid var(--border-subtle)',
+                        borderRadius: '8px',
+                      }}
+                      labelFormatter={(label) => {
+                        const timestamp = typeof label === 'number' ? label : parseFloat(String(label));
+                        return `Date: ${formatTooltipDate(timestamp)}`;
+                      }}
+                      formatter={(value) => {
+                        if (value === undefined || typeof value !== 'number') return ['', 'APY'];
+                        return [formatPercentage(value / 100), 'APY'];
+                      }}
+                    />
+                    <Line 
+                      type="monotone" 
+                      dataKey="apy" 
+                      stroke="var(--primary)" 
+                      strokeWidth={2}
+                      dot={false}
+                      connectNulls
+                      isAnimationActive={false}
+                    />
+                    {averageApy !== null && (
+                      <ReferenceLine
+                        y={averageApy}
+                        stroke="var(--foreground-secondary)"
+                        strokeDasharray="4 4"
+                        strokeWidth={1.5}
+                        ifOverflow="extendDomain"
+                        label={{
+                          value: `Avg ${formatPercentage(averageApy / 100)}`,
+                          position: 'insideTopRight',
+                          fill: 'var(--foreground-secondary)',
+                          fontSize: 11,
+                        }}
+                      />
+                    )}
+                  </LineChart>
+                ) : chartType === 'sharePrice' ? (
+                  <LineChart data={sharePriceChartData} margin={VAULT_CHART_MARGIN}>
+                    <CartesianGrid strokeDasharray="3 3" stroke="var(--border-subtle)" />
+                    <XAxis
+                      dataKey="timestamp"
+                      tickFormatter={formatDate}
+                      stroke="var(--foreground-secondary)"
+                      style={{ fontSize: '12px' }}
+                      type="number"
+                      scale="time"
+                      domain={['dataMin', 'dataMax']}
+                      ticks={xTicks}
+                      interval={0}
+                      padding={{ left: 0, right: 0 }}
+                    />
+                    <YAxis
+                      width={axisWidthForDomain(sharePriceYAxisDomain, (value) =>
+                        formatSharePriceYAxisTick(value, valueType, vaultData)
+                      )}
+                      orientation="left"
+                      tickMargin={4}
+                      domain={sharePriceYAxisDomain}
+                      tickFormatter={(value) => {
+                        if (value === undefined || typeof value !== 'number') return '';
+                        return formatSharePriceYAxisTick(value, valueType, vaultData);
+                      }}
+                      stroke="var(--foreground-secondary)"
+                      style={{ fontSize: '12px' }}
+                    />
+                    <Tooltip
+                      contentStyle={{
+                        backgroundColor: 'var(--surface-elevated)',
+                        border: '1px solid var(--border-subtle)',
+                        borderRadius: '8px',
+                      }}
+                      labelFormatter={(label) => {
+                        const timestamp = typeof label === 'number' ? label : parseFloat(String(label));
+                        return `Date: ${formatTooltipDate(timestamp)}`;
+                      }}
+                      formatter={(value) => {
+                        if (value === undefined || typeof value !== 'number') return ['', 'Share Price'];
+                        if (valueType === 'usd') {
+                          return [formatSharePriceUsd(value), 'Share Price (USD)'];
+                        }
+                        return [
+                          formatSharePriceTokenAmount(
+                            value,
+                            vaultData.assetDecimals || 18,
+                            vaultData.symbol
+                          ),
+                          `Share Price (${vaultData.symbol})`,
+                        ];
+                      }}
+                    />
+                    <Line
+                      type="monotone"
+                      dataKey="value"
+                      stroke="var(--primary)"
+                      strokeWidth={2}
+                      dot={false}
+                      isAnimationActive={false}
+                    />
+                  </LineChart>
+                ) : (
+                  <AreaChart data={tvlChartData} margin={VAULT_CHART_MARGIN}>
+                        <CartesianGrid strokeDasharray="3 3" stroke="var(--border-subtle)" />
+                        <XAxis
+                          dataKey="timestamp"
+                          tickFormatter={formatDate}
+                          stroke="var(--foreground-secondary)"
+                          style={{ fontSize: '12px' }}
+                          type="number"
+                      scale="time"
+                      domain={['dataMin', 'dataMax']}
+                      ticks={xTicks}
+                      interval={0}
+                          padding={{ left: 0, right: 0 }}
+                        />
+                        <YAxis
+                          width={axisWidthForDomain(tvlYAxisDomain, (value) =>
+                            formatTvlYAxisTick(value, valueType, vaultData)
+                          )}
+                          orientation="left"
+                          tickMargin={4}
+                          domain={tvlYAxisDomain}
+                          tickFormatter={(value) => {
+                            if (value === undefined || typeof value !== 'number') return '';
+                            return formatTvlYAxisTick(value, valueType, vaultData);
+                          }}
+                          stroke="var(--foreground-secondary)"
+                          style={{ fontSize: '12px' }}
+                        />
+                        <Tooltip
+                          contentStyle={{
+                            backgroundColor: 'var(--surface-elevated)',
+                            border: '1px solid var(--border-subtle)',
+                            borderRadius: '8px',
+                          }}
+                          labelFormatter={(label) => {
+                            const timestamp = typeof label === 'number' ? label : parseFloat(String(label));
+                            return `Date: ${formatTooltipDate(timestamp)}`;
+                          }}
+                          formatter={(value) => {
+                            if (value === undefined || typeof value !== 'number') return ['', 'Total Deposits'];
+                            if (valueType === 'usd') {
+                              return [formatCurrency(value), 'Total Deposits'];
+                            }
+                            return [
+                              formatVaultChartTokenAmount(
+                                value,
+                                vaultData.assetDecimals || 18,
+                                vaultData.symbol
+                              ),
+                              'Total Deposits',
+                            ];
+                          }}
+                        />
+                        <Area 
+                          type="monotone" 
+                          dataKey="value" 
+                          stroke="var(--primary)" 
+                          fill="var(--primary-subtle)"
+                          strokeWidth={2}
+                          isAnimationActive={false}
+                        />
+                      </AreaChart>
+                )}
+              </ResponsiveContainer>
+            </div>
+            {chartType === 'apy' && (
+              <p className="mt-2 px-1 text-xs text-[var(--foreground-muted)]">
+                Average net APY over time. Net APY above is the current rate, so it can differ from the latest point.
+                {averageApy !== null && (
+                  <> The dotted line is the average over this period ({formatPercentage(averageApy / 100)}).</>
+                )}
+              </p>
+            )}
+          </div>
+        ) : (
+          <div className={`bg-[var(--surface-elevated)] rounded-lg border border-[var(--border-subtle)] ${VAULT_DETAIL_CHART_HEIGHT_CLASS} flex items-center justify-center text-sm text-[var(--foreground-muted)]`}>
+            No historical data available
+          </div>
+        )}
+        </div>
+        </VaultSection>
+
+        <VaultSection id="vault-allocation" title="Allocation">
+          <div className="bg-[var(--surface-elevated)] rounded-lg border border-[var(--border-subtle)] p-2 sm:p-3">
+            <VaultAllocations
+              vaultData={vaultData}
+              allocations={ownAllocations.allocations}
+              loading={ownAllocations.loading}
+              error={ownAllocations.error}
+            />
+          </div>
+        </VaultSection>
+
+        <VaultSection
+          id="vault-risk"
+          title="Risk"
+        >
+          <VaultRiskFacts vaultData={vaultData} />
+        </VaultSection>
+
+        <VaultSection id="vault-details" title="Vault details">
+          <VaultDetails vaultData={vaultData} />
+        </VaultSection>
+      </div>
+    </div>
+  );
+}

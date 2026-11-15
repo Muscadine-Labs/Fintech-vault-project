@@ -1,0 +1,98 @@
+'use client';
+
+import React from 'react';
+import { Skeleton } from './Skeleton';
+
+export interface ButtonProps extends React.ButtonHTMLAttributes<HTMLButtonElement> {
+  variant?: 'primary' | 'secondary' | 'ghost' | 'danger' | 'icon';
+  size?: 'sm' | 'md' | 'lg';
+  icon?: React.ReactNode;
+  iconPosition?: 'left' | 'right';
+  children?: React.ReactNode;
+  loading?: boolean;
+  fullWidth?: boolean;
+}
+
+export function Button({
+  variant = 'primary',
+  size = 'md',
+  icon,
+  iconPosition = 'left',
+  children,
+  loading = false,
+  fullWidth = false,
+  className = '',
+  disabled,
+  ...props
+}: ButtonProps) {
+  const baseClasses = 'inline-flex items-center justify-center font-medium transition-all duration-200 focus:outline-none focus:ring-2 focus:ring-offset-2 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed';
+  
+  const variants = {
+    primary: 'bg-[var(--primary)] hover:bg-[var(--primary-hover)] active:bg-[var(--primary-active)] text-white focus:ring-[var(--primary)] shadow-sm',
+    secondary: 'bg-[var(--surface-elevated)] hover:bg-[var(--surface-hover)] active:bg-[var(--surface-active)] text-[var(--foreground)] border border-[var(--border-subtle)] focus:ring-[var(--border)] shadow-sm',
+    ghost: 'hover:bg-[var(--surface-hover)] active:bg-[var(--surface-active)] text-[var(--foreground)] focus:ring-[var(--border)]',
+    danger: 'bg-[var(--danger)] hover:bg-[var(--danger-hover)] active:bg-[var(--danger)] text-white focus:ring-[var(--danger)] shadow-sm',
+    icon: 'hover:bg-[var(--surface-hover)] active:bg-[var(--surface-active)] text-[var(--foreground-secondary)] focus:ring-[var(--border)] rounded-full',
+  };
+  
+  const sizes = {
+    sm: 'px-3 py-1.5 text-sm rounded-md gap-1.5',
+    md: 'px-4 py-2 text-sm rounded-lg gap-2',
+    lg: 'px-6 py-3 text-base rounded-lg gap-2',
+  };
+
+  const iconSizes = {
+    sm: 'w-4 h-4',
+    md: 'w-4 h-4', 
+    lg: 'w-5 h-5',
+  };
+
+  const iconOnlySizes = {
+    sm: 'w-8 h-8',
+    md: 'w-10 h-10',
+    lg: 'w-12 h-12',
+  };
+
+  const isIconOnly = variant === 'icon' || (!children && icon);
+  const sizeClasses = isIconOnly ? iconOnlySizes[size] : sizes[size];
+  const iconSizeClass = iconSizes[size];
+
+  const classes = [
+    baseClasses,
+    variants[variant],
+    sizeClasses,
+    fullWidth && !isIconOnly ? 'w-full' : '',
+    className,
+  ].filter(Boolean).join(' ');
+
+  const iconElement = icon && (
+    <span className={`${iconSizeClass} flex-shrink-0 ${loading ? 'opacity-0' : ''}`}>
+      {icon}
+    </span>
+  );
+
+  const loadingSkeleton = loading && (
+    <Skeleton 
+      width={isIconOnly ? "1em" : "3em"}
+      height="1em"
+      className="flex-shrink-0"
+    />
+  );
+
+  return (
+    <button 
+      className={classes}
+      disabled={disabled || loading}
+      {...props}
+    >
+      {loading && loadingSkeleton}
+      {!loading && icon && iconPosition === 'left' && iconElement}
+      {children && (
+        <span className={loading ? 'opacity-0' : ''}>
+          {children}
+        </span>
+      )}
+      {!loading && icon && iconPosition === 'right' && iconElement}
+    </button>
+  );
+}

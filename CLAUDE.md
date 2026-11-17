@@ -31,6 +31,7 @@ There are three upstreams. The template repo https://github.com/Muscadine-Labs/F
 
 | Folder | Upstream | Branch | Last synced commit |
 | --- | --- | --- | --- |
+| root files | https://github.com/Muscadine-Labs/Fintech-vault-project | `main` | none recorded yet. On the first sync, compare the root files against the template's current `main`, then record its SHA and date here. |
 | `app` | https://github.com/Muscadine-Labs/app | `main` | `b2ed40480a39bab9dcf7ec1e679ffb3fa15eb4e4` (2026-11-15, PR #147) |
 | `curator` | https://github.com/Muscadine-Labs/curator | `main` | `99995fb0767b05329b232e8c66300d5fb65a8180` (2026-11-15, PR #85) |
 
@@ -38,7 +39,7 @@ The README has the same table. Update both together.
 
 ## How to sync an upstream update
 
-For the root files, sync from the template repo the same way (compare against it, apply by hand, keep student setup). For each folder (`app`, `curator`):
+For the root files, sync from the template repo the same way, using the `root files` row of the table above as `<last-synced>` (compare against it, apply by hand, keep student setup). For each folder (`app`, `curator`):
 
 1. Clone upstream outside this repo and run `git log <last-synced>..origin/main` and `git diff <last-synced>..origin/main`. If the commit is missing, run `git fetch --depth=1000 origin main`.
 2. Apply the changes by hand to the matching folder. Don't overwrite whole files, vault config (see `USER-GUIDE.md`), each folder's docs and `.env.example`, `app/src/app/contact`, or `app/src/app/curator`. Skip anything removed on purpose (see "Removed on purpose"), plus `.github`, which students don't have.

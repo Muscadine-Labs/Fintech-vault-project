@@ -19,5 +19,6 @@ This repo is a copy of the template repo [Fintech-vault-project](https://github.
 
 | Folder | Upstream | Last synced commit |
 | --- | --- | --- |
+| root files | [Muscadine-Labs/Fintech-vault-project](https://github.com/Muscadine-Labs/Fintech-vault-project) `main` | none recorded yet |
 | `app` | [Muscadine-Labs/app](https://github.com/Muscadine-Labs/app) `main` | `b2ed404` (2026-11-15) |
 | `curator` | [Muscadine-Labs/curator](https://github.com/Muscadine-Labs/curator) `main` | `99995fb` (2026-11-15) |

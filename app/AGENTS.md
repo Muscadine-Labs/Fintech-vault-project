@@ -4,6 +4,9 @@ Instructions for AI agents working in this repo. Full architecture docs live in 
 
 ## Working agreement
 
+> **Student repo:** read the root `CLAUDE.md` first. In this repo `TODO.md` is the student setup checklist, not a task list, and the "never push to `main`" rule yields to the user's own git instructions.
+
+
 1. **Review `TODO.md` at the start of every session.** It is the canonical task list:
    - “TO work on today” → actionable now.
    - “Needs confirmation first” → research or report only; do not implement without user OK.

@@ -10,6 +10,9 @@ Comprehensive context for AI assistants and developers. This is the canonical �
 
 ## Working agreement (read first)
 
+> **Student repo:** read the root `CLAUDE.md` first. In this repo `TODO.md` is the student setup checklist, not a task list, and the "never push to `main`" rule yields to the user's own git instructions.
+
+
 - **Review `TODO.md` at the start of every session.** It is the canonical task list: items under “TO work on today” are actionable now; “To work on another day” is backlog. Remove or update entries as work completes.
 - **Before every push to GitHub:** run `npm run lint` and `npm run build` locally and make sure both pass. Never put API keys in the repo.
 - **Git, branches and PRs:** AI assistants may commit, create branches, push those branches, and open pull requests without asking first. **Never push to, commit directly on, force-push, or merge into `main`** — every change reaches `main` only through a PR that the user merges. Work on a feature branch (create one if you are on `main`).

@@ -15,7 +15,7 @@ Any token Morpho indexes works. A new vault appears once Morpho has indexed it, 
 ## 2. Make it yours
 
 - App name: `APP_NAME` in `app/src/lib/constants.ts`
-- Logo: `app/public/favicon.svg`
+- Logo: `app/public/favicon.svg`, and `curator/public/favicon.svg` for the curator (see `curator/TODO.md` if you switch to a PNG)
 - Contact, curator link and legal pages: the files in `app/src/components/legal/`
 
 ## 3. Run locally

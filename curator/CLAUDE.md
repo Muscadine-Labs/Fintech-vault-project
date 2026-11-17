@@ -10,6 +10,9 @@ vault mechanics, contract wiring, or the data flow.
 
 ## 0. Working Agreements (read first)
 
+> **Student repo:** read the root `CLAUDE.md` first. In this repo `TODO.md` is the student setup checklist, not a task list, and the "never push to `main`" rule yields to the user's own git instructions.
+
+
 - **Review `TODO.md` at the start of every session.** It is the running task list
   for the repo. Work the "Today" section top-to-bottom unless the user
   directs otherwise; leave "Later" items alone unless asked.
@@ -61,7 +64,7 @@ managing and reporting on Morpho-style vaults on Base (chainId `8453`). It cover
 - **Onchain writes (allocator / sentinel / Safe UI)**: ABIs in
   `lib/onchain/abis.ts` + `vault-writes.ts`. Blue create-market, vault
   deposit/withdraw, gates, and deploy scripts are not in this dashboard.
-- **Auth**: Custom curator auth (`lib/auth/*`) with signed session tokens
+- **Auth**: not in this student copy (`lib/auth/*` was removed on purpose); the dashboard has no login.
 
 ---
 
@@ -362,9 +365,8 @@ grades; Sentinel holds emergency actions at the bottom.
    configs with different timelocks next to calls that have none. A pending
    config with no `validAt` is never Executable (`pendingStatus` → unknown);
    badges tick every 30s. `vault-activity` refetches after Safe execute.
-   `loadSafeHistory` (per-Safe cache) is also used by `/api/bots/activity`,
-   which decodes Safe-sourced candidates from the history calldata instead of
-   an RPC `getTransaction`.
+   `loadSafeHistory` (per-Safe cache) is also used by the bots activity route
+   upstream (removed from this student copy).
    Filters: type and role (`activityRoles` — an address can hold several).
    Allocation targets resolve from cap ids (`keccak256(resolveCapIdData)`), most
    specific id first. Fetches only when the card is opened.
@@ -1396,7 +1398,6 @@ Ranges in `package.json` match the installed versions. Do not take these majors:
 | Morpho app deep links            | `lib/morpho/morpho-app-links.ts`                         |
 | V2 pending UI                    | `components/morpho/VaultV2Pending.tsx`                    |
 | V2 vault page (tabs)             | `app/vault/[address]/page.tsx`                            |
-| Vault gates                      | `GET /api/vaults/[id]/gates` |
 | Blue market types + normalize      | `lib/morpho/blue-market-data.ts` (`asBlueMarketData`) |
 | Client fetch + refetch interval  | `lib/data/api-fetch.ts`, `lib/data/query-config.ts`      |
 | BFF cache headers                | `lib/api/response-cache.ts`, `lib/api/server-response-cache.ts` |

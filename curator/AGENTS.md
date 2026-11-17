@@ -5,6 +5,8 @@ This file is the **invariants contract**. Deep architecture: **`CLAUDE.md`**. In
 
 ## Session checklist
 
+> **Student repo:** read the root `CLAUDE.md` first. In this repo `TODO.md` is the student setup checklist, not a task list, and the "never push to `main`" rule yields to the user's own git instructions.
+
 1. **Read `TODO.md` first.** Work "Today" top-to-bottom unless directed otherwise. "Later" is out of scope unless asked.
 2. **Follow the brain loop** (`docs/brain/README.md`): load context → use Morpho MCP for live Morpho data when needed → implement → close loop (TODO + `docs/brain/CHANGELOG.md` + docs).
 3. **Read relevant `CLAUDE.md` sections** (especially §3 vault mental model and §5 reallocation UX) before changing allocation logic. Create-market: §18.

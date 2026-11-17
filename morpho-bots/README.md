@@ -9,4 +9,4 @@ That repo includes several bots: liquidators, a Midnight market maker, a Vault V
 - `equalize-utilizations` (the default) moves liquidity so each market's utilization moves toward the vault average.
 - `apy-range` keeps each market's borrow APY inside a range you set.
 
-Make your own strategy when those two do not match your goals and risk limits. If you build a bot, I can run it on my server. You add my wallet as an allocator on the vault.
+Make your own strategy when those two do not match your goals and risk limits. To run a bot, host it yourself and add its wallet as an allocator on your vault.

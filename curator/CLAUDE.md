@@ -10,6 +10,9 @@ vault mechanics, contract wiring, or the data flow.
 
 ## 0. Working Agreements (read first)
 
+> **Student repo:** read the root `CLAUDE.md` first. In this repo `TODO.md` is the student setup checklist, not a task list, and the "never push to `main`" rule yields to the user's own git instructions.
+
+
 - **Review `TODO.md` at the start of every session.** It is the running task list
   for the repo. Work the "Today" section top-to-bottom unless the user
   directs otherwise; leave "Later" items alone unless asked.
@@ -61,7 +64,7 @@ managing and reporting on Morpho-style vaults on Base (chainId `8453`). It cover
 - **Onchain writes (allocator / sentinel / Safe UI)**: ABIs in
   `lib/onchain/abis.ts` + `vault-writes.ts`. Blue create-market, vault
   deposit/withdraw, gates, and deploy scripts are not in this dashboard.
-- **Auth**: Custom curator auth (`lib/auth/*`) with signed session tokens
+- **Auth**: not in this student copy (`lib/auth/*` was removed on purpose); the dashboard has no login.
 
 ---
 
@@ -319,7 +322,7 @@ and risk change continuously and hooks refetch on tab switch and post-tx.
 **Tab order**: Overview → Allocation → Caps → Risk → Timelocks → Sentinel.
 The vault header is the vault name, chain, and a more menu (copy address, Morpho, explorer). Tabs are text links under that header. Pending timelock count is on Timelocks and Sentinel.
 Overview holds metrics, fees (incl. Public Allocator fee), risk parameters (max rate, force
-deallocation penalty), roles, gates, and the adapters table, then collapsible activity → holders → recent txs →
+deallocation penalty), roles, and the adapters table, then collapsible activity → holders → recent txs →
 history (10 per page with arrows, default closed). Risk holds market risk
 grades; Sentinel holds emergency actions at the bottom.
 
@@ -362,9 +365,8 @@ grades; Sentinel holds emergency actions at the bottom.
    configs with different timelocks next to calls that have none. A pending
    config with no `validAt` is never Executable (`pendingStatus` → unknown);
    badges tick every 30s. `vault-activity` refetches after Safe execute.
-   `loadSafeHistory` (per-Safe cache) is also used by `/api/bots/activity`,
-   which decodes Safe-sourced candidates from the history calldata instead of
-   an RPC `getTransaction`.
+   `loadSafeHistory` (per-Safe cache) is also used by the bots activity route
+   upstream (removed from this student copy).
    Filters: type and role (`activityRoles` — an address can hold several).
    Allocation targets resolve from cap ids (`keccak256(resolveCapIdData)`), most
    specific id first. Fetches only when the card is opened.
@@ -489,8 +491,7 @@ vault data from components.
 
 ### 4.3.1 Vault list API and sidebar
 
-`GET /api/vaults` (`app/api/vaults/route.ts`) fans out V1 (`vaults { … }`) and
-per-address V2 (`vaultV2ByAddress`) Morpho GraphQL queries. Each row is enriched
+`GET /api/vaults` (`app/api/vaults/route.ts`) fans out per-address V2 (`vaultV2ByAddress`) Morpho GraphQL queries. Each row is enriched
 from `lib/config/vaults.ts` with:
 
 - `id` — same as vault `address` (for legacy UI keys)
@@ -599,16 +600,10 @@ Monitor server logs when Morpho schedules field removals.
 **Client-side Morpho queries** (browser `morphoGraphQLClient` in `useVaultCaps`,
 `useVaultQueues`) must use `marketId` as well — not only server routes.
 
-V1 list query must not use removed `VaultState` APY fields (`weeklyNetApy` /
-`monthlyNetApy` caused silent empty V1 rows via `.catch(() => [])`).
-
 **Other Morpho API fixes (do not regress):**
 
-- V1 detail query: `warnings` on **vault root**, not `state` (GraphQL validation error).
 - V2 governance caps: GraphQL `type` is `Adapter` / `MarketV1`, not lowercase
   `adapter` / `market` — see `lib/morpho/cap-utils.ts`.
-- V1 on-chain parameters: `GET /api/vaults/v1/[id]/parameters` (server multicall),
-  not wallet RPC in the browser.
 - Allocation tables: optional **USD / Tokens** toggle via `AllocationFilters.amountUnit`
   and `lib/format/allocation-display.ts`; decimals from `lib/format/asset-decimals.ts`
   (USDC 6, WETH 18, cbBTC 8).
@@ -1396,7 +1391,6 @@ Ranges in `package.json` match the installed versions. Do not take these majors:
 | Morpho app deep links            | `lib/morpho/morpho-app-links.ts`                         |
 | V2 pending UI                    | `components/morpho/VaultV2Pending.tsx`                    |
 | V2 vault page (tabs)             | `app/vault/[address]/page.tsx`                            |
-| Vault gates                      | `GET /api/vaults/[id]/gates` |
 | Blue market types + normalize      | `lib/morpho/blue-market-data.ts` (`asBlueMarketData`) |
 | Client fetch + refetch interval  | `lib/data/api-fetch.ts`, `lib/data/query-config.ts`      |
 | BFF cache headers                | `lib/api/response-cache.ts`, `lib/api/server-response-cache.ts` |
@@ -1761,16 +1755,11 @@ expose at most two filter dropdowns:
 - `SourceModeFilter` — `Total / By Vault / 1st derivative / 2nd derivative`
   (single button). Used by `ChartTvl`; the breakdown option appears only with
   `vaultData`, the two derivative options apply to the total.
-- **Live intraday points (do not regress):** DefiLlama's protocol endpoint
-  appends a "so far today" snapshot (e.g. `…T20:16:23Z`) after today's
-  midnight point on TVL, by-token TVL and the inflows built from them. It is
-  tagged **at the source**, `live: true` via `tagLivePoint` in
-  `lib/defillama/service.ts`, so no consumer re-guesses it from timestamps.
-  Derivative views drop it (`dropLivePoints`) — kept, two points share a day
-  and the 1st derivative merged both steps (today showed $50.99 instead of
-  $26.58). Latest-value reads (`getLatestTvl`) keep it. The cumulative view is
-  one point per day, the live total replacing today's midnight point
-  (`onePointPerDay`), so no date appears twice.
+- **Live intraday points:** a "so far today" snapshot tagged `live: true` is dropped
+  from derivative views by `dropLivePoints` (`lib/utils/series-derivative.ts`), because it
+  would put two points on one day and double the 1st derivative. The DefiLlama service
+  that tags these points at the source was removed from this student copy, so only the
+  drop side remains.
 - **Gaps:** flow cumulatives carry the total forward (`fillCumulativeDays`);
   level series (TVL) interpolate a missing day linearly (`fillLevelDays`), so
   every day has a derivative point and the 2nd-derivative trend (which looks
@@ -1861,8 +1850,7 @@ decode), `lib/safe/pending-store.test.ts` (import signature merge),
 `lib/utils/error-handler.test.ts`,
 `lib/api/query-params.test.ts`.
 
-`lib/onchain/allocation-dust.test.ts`, `lib/morpho/send-assets-gate-roster.test.ts`
-(source fallback, Cloudflare challenge, page-boundary re-read),
+`lib/onchain/allocation-dust.test.ts`,
 `lib/morpho/oracle-display.test.ts`, `oracle-decode.server.test.ts` (meta oracle
 active source), `market-activity-math.test.ts` (collateral at risk, V2 vault
 allocation via adapters), `vault-activity.test.ts` (Safe/MultiSend governance

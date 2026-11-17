@@ -15,9 +15,10 @@ Students change vault addresses, names, and types in two files, then deploy each
 
 ## Upstream sync
 
-`app` and `curator` are copies of the Muscadine Labs repos, not exact mirrors. To pull in updates, ask your AI to follow [CLAUDE.md](CLAUDE.md).
+This repo is a copy of the template repo [Fintech-vault-project](https://github.com/Muscadine-Labs/Fintech-vault-project), and `app` and `curator` are copies of their own upstream repos, not exact mirrors. To pull in updates, ask your AI to follow [CLAUDE.md](CLAUDE.md).
 
 | Folder | Upstream | Last synced commit |
 | --- | --- | --- |
+| root files | [Muscadine-Labs/Fintech-vault-project](https://github.com/Muscadine-Labs/Fintech-vault-project) `main` | none recorded yet |
 | `app` | [Muscadine-Labs/app](https://github.com/Muscadine-Labs/app) `main` | `b2ed404` (2026-11-15) |
 | `curator` | [Muscadine-Labs/curator](https://github.com/Muscadine-Labs/curator) `main` | `99995fb` (2026-11-15) |

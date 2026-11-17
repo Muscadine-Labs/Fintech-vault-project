@@ -1,6 +1,6 @@
 # CLAUDE.md
 
-Student repo with copies of two upstream projects. This file tells an AI how to pull in upstream updates.
+Student repo with copies of two upstream projects (`app` and `curator`). It is also a copy of the template repo https://github.com/Muscadine-Labs/Fintech-vault-project, which is upstream for the whole repo. This file tells an AI how to pull in upstream updates.
 
 ## What's in this repo
 
@@ -23,9 +23,11 @@ Read the folder's own `CLAUDE.md` before changing code there. It holds the archi
 - **Data:** vault data comes from the public Morpho GraphQL API (`https://api.morpho.org/graphql`). Only Morpho V2 vaults are supported.
 - **Before finishing a change:** run `npm run lint` and `npm run build` in each folder you touched. The build needs the keys in `.env.local` (see Env vars).
 - **Upstream rules vs. this repo:** the subfolder docs came from the upstream repos. They say to read `TODO.md` first, keep `CLAUDE.md` and `AGENTS.md` in sync, and never push to `main`. In this student repo, follow the user's own git instructions. Each folder's `TODO.md` is the student setup checklist (vaults, favicon, keys, Vercel), not upstream's task list, so don't sync it.
-- **Removed on purpose:** students don't get Muscadine's business-specific parts, so the student copies are trimmed. Missing items include curator auth, bots and gates routes, Muscadine's real vault and Safe addresses, and Muscadine's protocol stats and business info. The subfolder docs still describe some of these. Treat a missing file as intentional, check that a file exists before relying on it, and never re-add removed pieces, including when syncing from upstream.
+- **Removed on purpose:** students don't get the upstream's business-specific parts, so the student copies are trimmed. Missing items include curator auth, bots and gates routes, the real vault and Safe addresses, and protocol stats and business info. The subfolder docs still describe some of these. Treat a missing file as intentional, check that a file exists before relying on it, and never re-add removed pieces, including when syncing from upstream.
 
 ## Upstream repos and last synced commits
+
+There are three upstreams. The template repo https://github.com/Muscadine-Labs/Fintech-vault-project is upstream for this whole repo (root docs, `USER-GUIDE.md`, placeholders, structure). `app` and `curator` each also have their own upstream, listed below.
 
 | Folder | Upstream | Branch | Last synced commit |
 | --- | --- | --- | --- |
@@ -36,7 +38,7 @@ The README has the same table. Update both together.
 
 ## How to sync an upstream update
 
-For each folder (`app`, `curator`):
+For the root files, sync from the template repo the same way (compare against it, apply by hand, keep student setup). For each folder (`app`, `curator`):
 
 1. Clone upstream outside this repo and run `git log <last-synced>..origin/main` and `git diff <last-synced>..origin/main`. If the commit is missing, run `git fetch --depth=1000 origin main`.
 2. Apply the changes by hand to the matching folder. Don't overwrite whole files, vault config (see `USER-GUIDE.md`), each folder's docs and `.env.example`, `app/src/app/contact`, or `app/src/app/curator`. Skip anything removed on purpose (see "Removed on purpose"), plus `.github`, which students don't have.

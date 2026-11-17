@@ -15,7 +15,7 @@ Students change vault addresses, names, and types in two files, then deploy each
 
 ## Upstream sync
 
-`app` and `curator` are copies of the Muscadine Labs repos, not exact mirrors. To pull in updates, ask your AI to follow [CLAUDE.md](CLAUDE.md).
+This repo is a copy of the template repo [Fintech-vault-project](https://github.com/Muscadine-Labs/Fintech-vault-project), and `app` and `curator` are copies of their own upstream repos, not exact mirrors. To pull in updates, ask your AI to follow [CLAUDE.md](CLAUDE.md).
 
 | Folder | Upstream | Last synced commit |
 | --- | --- | --- |

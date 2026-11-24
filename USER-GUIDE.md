@@ -6,7 +6,7 @@ List the same vault addresses in both files. Delete the example rows and add one
 
 **App:** `app/src/lib/vaults.ts`, in `VAULTS`: `address`, `name` (shown until Morpho returns the vault's name), `symbol` (asset label, such as `USDC`), `vaultSymbol` (share token), `type`.
 
-**Curator:** `curator/lib/config/vaults.ts`, in `vaultAddresses`: `address`, `name`, `assetSymbol`, `type`. For an asset other than USDC, USDT, DAI, WETH or a BTC token, also set `assetDecimals`.
+**Curator:** `curator/src/lib/config/vaults.ts`, in `vaultAddresses`: `address`, `name`, `assetSymbol`, `type`. For an asset other than USDC, USDT, DAI, WETH or a BTC token, also set `assetDecimals`.
 
 Any token Morpho indexes works. A new vault appears once Morpho has indexed it, usually within minutes of its first transaction.
 

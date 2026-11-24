@@ -9,7 +9,7 @@ Two independent Next.js + TypeScript apps for curated Morpho V2 vaults on Base (
 | Folder | What it is | Port | Own docs |
 | --- | --- | --- | --- |
 | `app` | Depositor front end: deposit, withdraw, portfolio, vault analytics. Source in `src/`. | 3000 | `CLAUDE.md`, `AGENTS.md`, `TODO.md`, `SECURITY.md` |
-| `curator` | Curator dashboard: TVL and fee charts, risk, governance, caps, allocation. Source in `app/`, `components/`, `lib/`. | 3001 | `CLAUDE.md`, `AGENTS.md`, `TODO.md`, `SECURITY.md`, `docs/brain/` |
+| `curator` | Curator dashboard: TVL and fee charts, risk, governance, caps, allocation. Source in `src/app/`, `src/components/`, `src/lib/`. | 3001 | `CLAUDE.md`, `AGENTS.md`, `TODO.md`, `SECURITY.md`, `docs/` |
 | `morpho-bots` | Empty placeholder; its README links to the upstream bots. | | `README.md` |
 | `onchain` | Empty placeholder for future Morpho scripts. | | `README.md` |
 
@@ -17,7 +17,7 @@ Read the folder's own `CLAUDE.md` before changing code there. It holds the archi
 
 ## Things to know
 
-- **Student setup:** vault addresses go in `app/src/lib/vaults.ts` and `curator/lib/config/vaults.ts`, and the two lists must match. Curator writes are signed by the connected wallet that holds the on-chain role. Branding is `APP_NAME` in `app/src/lib/constants.ts`. `USER-GUIDE.md` covers setup, env vars and Vercel deploys.
+- **Student setup:** vault addresses go in `app/src/lib/vaults.ts` and `curator/src/lib/config/vaults.ts`, and the two lists must match. Curator writes are signed by the connected wallet that holds the on-chain role. Branding is `APP_NAME` in `app/src/lib/constants.ts`. `USER-GUIDE.md` covers setup, env vars and Vercel deploys.
 - **Env vars:** copy each `.env.example` to `.env.local`. The app needs an Alchemy key and a Reown (WalletConnect) project ID. Never commit keys.
 - **Vercel:** deploy as two projects, with Root Directory `app` and `curator`.
 - **Data:** vault data comes from the public Morpho GraphQL API (`https://api.morpho.org/graphql`). Only Morpho V2 vaults are supported.

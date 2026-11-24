@@ -1,6 +1,6 @@
 # AGENTS.md — Working Instructions for AI Assistants
 
-**Brain hub (closed loop):** [`docs/brain/README.md`](docs/brain/README.md) — session protocol, changelog, Morpho MCP.  
+**Brain hub (closed loop):** [`docs/README.md`](docs/README.md) — session protocol, changelog, Morpho MCP.  
 This file is the **invariants contract**. Deep architecture: **`CLAUDE.md`**. Intent queue: **`TODO.md`**.
 
 ## Session checklist
@@ -8,7 +8,7 @@ This file is the **invariants contract**. Deep architecture: **`CLAUDE.md`**. In
 > **Student repo:** read the root `CLAUDE.md` first. In this repo `TODO.md` is the student setup checklist, not a task list, and the "never push to `main`" rule yields to the user's own git instructions.
 
 1. **Read `TODO.md` first.** Work "Today" top-to-bottom unless directed otherwise. "Later" is out of scope unless asked.
-2. **Follow the brain loop** (`docs/brain/README.md`): load context → use Morpho MCP for live Morpho data when needed → implement → close loop (TODO + `docs/brain/CHANGELOG.md` + docs).
+2. **Follow the brain loop** (`docs/README.md`): load context → use Morpho MCP for live Morpho data when needed → implement → close loop (TODO + `docs/CHANGELOG.md` + docs).
 3. **Read relevant `CLAUDE.md` sections** (especially §3 vault mental model and §5 reallocation UX) before changing allocation logic. Create-market: §18.
 4. After substantive changes, run and pass:
 
@@ -86,7 +86,7 @@ npm run build   # next build
   `vaultV2transactions`. Client logs `extensions.warnings` via
   `lib/morpho/graphql-client.ts`. See `CLAUDE.md` §4.4.1.
 - **App routes** — `/` (Overview), `/vaults`, `/vault/[address]/*`,
-  `/markets`, `/market/blue/[id]`, `/midnight/[id]`,
+  `/markets`, `/markets/blue/[id]`, `/markets/midnight/[id]`,
   `/curator` (Curator tools hub). `/safe` redirects to `/curator`. No `/curator/gates`, `/curator/bots`,
   or `/monthly-statement`.
   Deposit, lend, and create-market writes are not in this dashboard. Vault pages live
@@ -97,13 +97,13 @@ npm run build   # next build
   `…/history`, `…/holders`, etc.); protocol drill-downs at
   `GET /api/protocol-users`, `GET /api/protocol-transactions`; Midnight books at
   `GET /api/markets/midnight`, `GET /api/markets/midnight/[id]`.
-- **Vault pages** — `app/vault/[address]/{page,allocation,caps,…}` via
+- **Vault pages** — `src/app/vault/[address]/{page,allocation,caps,…}` via
   `VaultPageShell` (`'use client'` + React Query); keep **dynamic** (no
   SSG/`generateStaticParams` for vault addresses).
 - **Curator Morpho Markets** — `/markets` (default: All products, listed only, sort
   market size desc; product toggle All / Blue — variable rate / Midnight — fixed
-  rate; Midnight status Active / Matured / All, default Active), `/market/blue/[id]` (Blue), and
-  `/midnight/[id]` (Midnight order book — not Blue KPIs). `/markets` lists Blue and
+  rate; Midnight status Active / Matured / All, default Active), `/markets/blue/[id]` (Blue), and
+  `/markets/midnight/[id]` (Midnight order book — not Blue KPIs). `/markets` lists Blue and
   Midnight in one table; a blank cell means that product has no value (Midnight:
   liquidity, 6H net APY, listed, configured; Blue: maturity). Loan / Collateral /
   Search apply to both products (`market-pair-filter.ts`). Midnight REST
@@ -142,5 +142,5 @@ npm run build   # next build
 - **Dependency pins** — ESLint **9.39.x**, wagmi **2.19.x**, TypeScript **6.0.x**
   (`typescript-eslint` peers `<6.1.0`), ox **0.14.x**, Vitest **5.0.x**. Do not
   bump ESLint 10, wagmi 3, TypeScript 7, or ox 1 (§11).
-- Keep `docs/brain/` (changelog + MCP), `CLAUDE.md`, `AGENTS.md`, and `TODO.md`
+- Keep `docs/` (changelog + MCP), `CLAUDE.md`, `AGENTS.md`, and `TODO.md`
   in sync with behavior changes (closed loop).

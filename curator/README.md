@@ -1,6 +1,6 @@
 # Curator
 
-Next.js dashboard for Morpho V2 vaults. Vault addresses, names, and types live in `lib/config/vaults.ts`. See the repo `USER-GUIDE.md`.
+Next.js dashboard for Morpho V2 vaults. Vault addresses, names, and types live in `src/lib/config/vaults.ts`. See the repo `USER-GUIDE.md`.
 
 ## Quick Start (macOS)
 

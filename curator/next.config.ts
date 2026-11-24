@@ -15,8 +15,8 @@ const nextConfig: NextConfig = {
   // Turbopack doesn't support false aliases yet
   turbopack: {
     resolveAlias: {
-      '../build/polyfills/polyfill-module': './lib/modern-polyfill.js',
-      'next/dist/build/polyfills/polyfill-module': './lib/modern-polyfill.js',
+      '../build/polyfills/polyfill-module': './src/lib/modern-polyfill.js',
+      'next/dist/build/polyfills/polyfill-module': './src/lib/modern-polyfill.js',
     },
   },
   webpack: (config) => {
@@ -121,8 +121,10 @@ const nextConfig: NextConfig = {
   async redirects() {
     return [
       { source: '/curator/markets', destination: '/markets', permanent: true },
-      { source: '/curator/market/blue/:id', destination: '/market/blue/:id', permanent: true },
-      { source: '/market/midnight/:id', destination: '/midnight/:id', permanent: true },
+      { source: '/curator/market/blue/:id', destination: '/markets/blue/:id', permanent: true },
+      { source: '/market/blue/:id', destination: '/markets/blue/:id', permanent: true },
+      { source: '/market/midnight/:id', destination: '/markets/midnight/:id', permanent: true },
+      { source: '/midnight/:id', destination: '/markets/midnight/:id', permanent: true },
       { source: '/curator/safe', destination: '/curator', permanent: true },
       { source: '/curator/safe/:path*', destination: '/curator', permanent: true },
       { source: '/safe', destination: '/curator', permanent: true },

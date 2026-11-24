@@ -2,6 +2,11 @@
 
 Notes from before this student template are not included.
 
+## 2026-11-24 — Source under src, markets in one route tree
+
+- Curator source now lives in `src/app`, `src/components`, and `src/lib`, matching the depositor app. `@/` points at `src/`.
+- Blue detail is `/markets/blue/[id]`. Midnight detail is `/markets/midnight/[id]`. `/market/blue/[id]`, `/midnight/[id]`, and `/market/midnight/[id]` redirect there.
+
 ## 2026-11-24 — Multisig Safe removed
 
 - Vault writes sign from the connected wallet only. The Safe workspace, Safe API routes, Transaction Service client, and `@safe-global` packages are gone.

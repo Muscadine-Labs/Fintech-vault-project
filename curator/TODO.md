@@ -4,7 +4,7 @@ Do these in order. The example vaults, favicon, and empty API keys are only ther
 
 ## 1. Your vaults
 
-Edit `lib/config/vaults.ts`. For each vault you want in the sidebar, set:
+Edit `src/lib/config/vaults.ts`. For each vault you want in the sidebar, set:
 
 - `address` — your vault contract
 - `name` — fallback until Morpho returns the on-chain name
@@ -15,7 +15,7 @@ You do not need Prime or Frontier. Delete example rows you are not using, and ad
 
 ## 2. Favicon
 
-Replace `public/favicon.svg` with your own icon. An AI-generated SVG or PNG is fine. If you use a PNG, point `app/layout.tsx`, `lib/wallet/config.ts`, and `public/manifest.json` at that file.
+Replace `public/favicon.svg` with your own icon. An AI-generated SVG or PNG is fine. If you use a PNG, point `src/app/layout.tsx`, `src/lib/wallet/config.ts`, and `public/manifest.json` at that file.
 
 ## 3. API keys
 

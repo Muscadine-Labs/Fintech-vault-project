@@ -1,9 +1,8 @@
 'use client';
 
-import { useCallback, useMemo, useState } from 'react';
-import { useRouter } from 'next/navigation';
+import { useCallback, useState } from 'react';
 import { useAccount, usePublicClient } from 'wagmi';
-import { encodeFunctionData, getAddress } from 'viem';
+import { getAddress } from 'viem';
 import { Button } from '@/components/ui/button';
 import { TxPreviewDialog } from '@/components/morpho/TxPreviewDialog';
 import { useVaultWrite } from '@/lib/hooks/useVaultWrite';
@@ -13,15 +12,6 @@ import { formatAllocationTableAmount } from '@/lib/format/allocation-display';
 import { getScanUrlForChain } from '@/lib/constants';
 import type { TxPreview } from '@/lib/morpho/tx-preview';
 import { isBroadcastTxHash, isWalletRejection } from '@/lib/utils/wallet-error';
-import { getConnectorProvider } from '@/lib/wallet/connector-provider';
-import { useCuratorSafeApps } from '@/lib/safe/safe-apps-context';
-import { queueSafeTransaction } from '@/lib/safe/queue-vault-write';
-import {
-  canConfirmPendingAcceptDestination,
-  defaultPendingAcceptDestination,
-  VAULT_WRITE_QUEUE_SAFE_ROLES,
-  type VaultWriteDestination,
-} from '@/lib/safe/vault-write-destination';
 
 type FeeQuote = {
   assets: bigint;
@@ -52,30 +42,18 @@ export function ClaimFeesButton({
   assetSymbol: string;
   assetDecimals: number | null | undefined;
 }) {
-  const router = useRouter();
   const publicClient = usePublicClient({ chainId });
   const write = useVaultWrite({ chainId });
-  const { isConnected, address: walletAddress, connector } = useAccount();
-  const { connected: safeAppConnected, sdk: safeAppSdk, safeRole: safeAppRole } =
-    useCuratorSafeApps();
+  const { isConnected } = useAccount();
   const [open, setOpen] = useState(false);
   const [preview, setPreview] = useState<TxPreview | null>(null);
   const [assets, setAssets] = useState(0n);
   const [quoting, setQuoting] = useState(false);
   const [quoteError, setQuoteError] = useState<string | null>(null);
-  const [queueingSafe, setQueueingSafe] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
-  const [destination, setDestination] = useState<VaultWriteDestination>(() =>
-    defaultPendingAcceptDestination(false)
-  );
 
   const vault = getAddress(vaultAddress);
   const decimals = assetDecimals ?? 18;
-
-  const safeAppSdkForRole = useMemo(() => {
-    if (!safeAppConnected || !safeAppSdk || destination.kind !== 'safe') return null;
-    return safeAppRole === destination.role ? safeAppSdk : null;
-  }, [safeAppConnected, safeAppSdk, safeAppRole, destination]);
 
   const readQuote = useCallback(async (): Promise<FeeQuote> => {
     if (!publicClient) throw new Error('Vault network client is not ready.');
@@ -124,7 +102,6 @@ export function ClaimFeesButton({
         );
       }
       setAssets(quote.assets);
-      setDestination(defaultPendingAcceptDestination(isConnected));
       setPreview({
         title: 'Claim fees',
         description: claimFeesMessage(amountLabel, vaultName, quote.assets),
@@ -145,44 +122,10 @@ export function ClaimFeesButton({
     } finally {
       setQuoting(false);
     }
-  }, [assetSymbol, decimals, isConnected, readQuote, resetWrite, vaultName]);
-
-  const queueInSafe = useCallback(
-    async (safeRole: VaultWriteDestination & { kind: 'safe' }) => {
-      if (!preview) return;
-      setQueueingSafe(true);
-      setSubmitError(null);
-      try {
-        await queueSafeTransaction({
-          safeRole: safeRole.role,
-          calldata: {
-            to: vault,
-            data: encodeFunctionData({ abi: vaultV2Abi, functionName: 'accrueInterest' }),
-          },
-          description: `Claim fees — ${vaultName}`,
-          preview,
-          source: { type: 'manual' },
-          proposer: walletAddress ? getAddress(walletAddress) : undefined,
-          provider: await getConnectorProvider(connector),
-          safeAppSdk: safeAppSdkForRole,
-        });
-        setOpen(false);
-        router.push(`/safe/${safeRole.role}/transactions`);
-      } catch (error) {
-        setSubmitError(error instanceof Error ? error.message : 'Failed to queue Safe transaction.');
-      } finally {
-        setQueueingSafe(false);
-      }
-    },
-    [connector, preview, router, safeAppSdkForRole, vault, vaultName, walletAddress]
-  );
+  }, [assetSymbol, decimals, readQuote, resetWrite, vaultName]);
 
   const confirm = useCallback(async () => {
     if (assets === 0n) return;
-    if (destination.kind === 'safe') {
-      await queueInSafe(destination);
-      return;
-    }
     if (!isConnected) {
       setSubmitError('Connect your wallet using the button in the top bar.');
       return;
@@ -196,7 +139,7 @@ export function ClaimFeesButton({
         setSubmitError(error instanceof Error ? error.message : 'Failed to submit transaction.');
       }
     }
-  }, [assets, destination, isConnected, queueInSafe, vault, write]);
+  }, [assets, isConnected, vault, write]);
 
   const txHash = write.txHash;
   const explorerHref =
@@ -220,7 +163,7 @@ export function ClaimFeesButton({
         open={open}
         preview={preview}
         onOpenChange={(next) => {
-          if (!next && ((write.isLoading && isBroadcastTxHash(write.txHash)) || queueingSafe)) {
+          if (!next && write.isLoading && isBroadcastTxHash(write.txHash)) {
             return;
           }
           setOpen(next);
@@ -230,25 +173,15 @@ export function ClaimFeesButton({
           }
         }}
         onConfirm={() => confirm()}
-        isLoading={destination.kind === 'safe' ? queueingSafe : write.isLoading}
-        isSuccess={destination.kind === 'wallet' && write.isSuccess}
-        txHash={destination.kind === 'wallet' ? txHash : null}
+        isLoading={write.isLoading}
+        isSuccess={write.isSuccess}
+        txHash={txHash}
         txExplorerHref={explorerHref}
-        error={
-          submitError
-            ? new Error(submitError)
-            : write.error && destination.kind === 'wallet'
-              ? write.error
-              : null
-        }
+        error={submitError ? new Error(submitError) : write.error}
         destinationOptions={{
-          destination,
-          onDestinationChange: setDestination,
           walletReady: isConnected,
           walletHint: 'Connect a wallet in the top bar. Anyone can accrue fees.',
-          safeRoles: VAULT_WRITE_QUEUE_SAFE_ROLES,
-          confirmEnabled:
-            assets > 0n && canConfirmPendingAcceptDestination(destination, isConnected),
+          confirmEnabled: assets > 0n && isConnected,
         }}
       />
     </div>

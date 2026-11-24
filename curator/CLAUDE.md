@@ -32,7 +32,6 @@ Copy `.env.example` → `.env.local`. See that file for the full list.
 | `ALCHEMY_API_KEY` | Recommended | Server Base RPC |
 | `NEXT_PUBLIC_ALCHEMY_API_KEY` | Recommended | Client Base RPC |
 | `NEXT_PUBLIC_APP_URL` | No | If unset: `http://localhost:3001` locally, the Vercel production domain (`VERCEL_PROJECT_PRODUCTION_URL`) on Vercel |
-| `NEXT_PUBLIC_SAFE_API_KEY` | No | Safe Transaction Service (proposals, sync, history, governance activity) |
 
 ---
 
@@ -44,7 +43,7 @@ managing and reporting on Morpho-style vaults on Base (chainId `8453`). It cover
 - Vault overview, TVL, revenue and fee charts
 - Per-vault pages for **Morpho V2** vaults (risk, governance, caps, allocation,
   sentinel) plus **Curator Morpho Markets** browser/detail
-- Curator tools (EIP-7702 delegation, Safe, frontend, morpho)
+- Curator tools (links to Morpho curator, oracles, and account dashboards)
 
 ### Tech stack
 
@@ -61,7 +60,7 @@ managing and reporting on Morpho-style vaults on Base (chainId `8453`). It cover
   `graphql-request` in `lib/morpho/graphql-client.ts`. **Vault list, detail,
   history, risk, and protocol stats BFF routes use this client directly** — not
   the Morpho SDK runtime.
-- **Onchain writes (allocator / sentinel / Safe UI)**: ABIs in
+- **Onchain writes (allocator / sentinel / curator wallet)**: ABIs in
   `lib/onchain/abis.ts` + `vault-writes.ts`. Blue create-market, vault
   deposit/withdraw, gates, and deploy scripts are not in this dashboard.
 - **Auth**: not in this student copy (`lib/auth/*` was removed on purpose); the dashboard has no login.
@@ -77,17 +76,14 @@ app/
     vaults/[id]/       On-chain vault endpoints (risk, governance, pending)
     markets/           Morpho Blue markets browser + detail BFF
     protocol-stats/    Aggregate TVL / revenue
-    safe/[address]/    GET /api/safe/[address]/info (owners, threshold, nonce, ETH)
   markets/             Morpho Markets browser (`/markets`)
   market/blue/[id]/    Blue market detail
-  safe/                Multisig Safe workspace
   curator/             Curator tools hub (`/curator`)
   vault/[address]/     Vault detail page (Morpho V2)
 
 components/
   morpho/              VaultV2Allocations, VaultV2Caps, VaultV2Sentinel,
                        TxPreviewDialog, AllocationListView, …
-  safe/                SafeOverviewPanel, SafeTransactionQueue, workspace link
   layout/              AppShell, Sidebar, Topbar
   ui/                  Primitive components (button, card, input, table, ...)
 
@@ -99,8 +95,7 @@ lib/
   format/number.ts     Central number/BigInt formatting helpers
   hooks/               React Query hooks for vault data
   morpho/              GraphQL queries, tx-preview, cap-decrease-input, …
-  safe/                Allocator and Sentinel Safe config, Protocol Kit client,
-                       localStorage pending queue, vault calldata builders
+  vault/               Wallet role checks for vault writes
   onchain/
     abis.ts            Vault V2 ABI only
     vault-writes.ts    V2 write config builders
@@ -112,7 +107,7 @@ lib/
   utils/               Logger, rate limit, env validation, error handler
   wallet/              Wagmi + Reown AppKit (`WagmiAdapter`, `createAppKit`), indexeddb polyfill
 
-.env / .env.local      Public env vars: WalletConnect, Alchemy RPC, app URL, Safe API key.
+.env / .env.local      Public env vars: WalletConnect, Alchemy RPC, app URL.
                        Vault addresses live in lib/config/vaults.ts.
 ```
 
@@ -350,23 +345,11 @@ grades; Sentinel holds emergency actions at the bottom.
    number is unknown, never `BigInt`-ed mid-render).
    **Activity** (`VaultActivityFeed`, `GET /api/vaults/[id]/activity`,
    `lib/morpho/vault-activity(.server).ts`) merges Morpho
-   `vaultV2AllocationTransactions` (signed `change`, `sender`), pending
-   `pendingConfigs` submits, and executed governance calls from the Owner /
-   Curator / Allocator / Sentinel Safes' Transaction Service history (direct
-   vault calls, vault `multicall`, canonical MultiSend batches; allocations
-   skipped there because Morpho indexes them). Morpho does **not** index
-   governance history; without `NEXT_PUBLIC_SAFE_API_KEY` the feed says so and
-   shows allocations + pending only. A partial Safe read is not cached. Each
-   Safe's newest 100 executed txs are cached **per Safe** (shared across
-   vaults); when a page is full the response carries
-   `governanceHistorySince` and the feed says older calls may be missing.
-   Executed submits reconcile with `pendingConfigs` **per call** (tx hash +
-   submitted calldata, `matchPendingConfig`) — a batch can submit several
-   configs with different timelocks next to calls that have none. A pending
-   config with no `validAt` is never Executable (`pendingStatus` → unknown);
-   badges tick every 30s. `vault-activity` refetches after Safe execute.
-   `loadSafeHistory` (per-Safe cache) is also used by the bots activity route
-   upstream (removed from this student copy).
+   `vaultV2AllocationTransactions` (signed `change`, `sender`) with pending
+   `pendingConfigs` submits. Morpho does not index executed governance, and
+   this app no longer reads it from a Safe history. A pending config with no
+   `validAt` is never Executable (`pendingStatus` → unknown); badges tick
+   every 30s.
    Filters: type and role (`activityRoles` — an address can hold several).
    Allocation targets resolve from cap ids (`keccak256(resolveCapIdData)`), most
    specific id first. Fetches only when the card is opened.
@@ -383,7 +366,7 @@ grades; Sentinel holds emergency actions at the bottom.
    Public Allocator absolute cap (including a vault cap of 0), and allow
    deallocation. Calls go to the Public Allocator contract (`setAbsoluteCap`,
    `setCanPullFromMarket`, `setCanPullFromIdle`, or one `multicall`), from the
-   allocator wallet or the Allocator Safe, and apply immediately. Vault caps
+   connected allocator wallet, and apply immediately. Vault caps
    still bind the move. Penalty stays read-only here.
 5. **Timelocks** — `VaultV2Timelocks.tsx`: pending actions (accept / revoke via
    `VaultV2Pending`) above the read-only delay list.
@@ -514,7 +497,7 @@ ops are `/vault/[address]/*`. User deposit and withdraw are not in this dashboar
 The app is Base-only: `CURATOR_MARKET_NETWORKS` / `SIDEBAR_NETWORKS` and the
 wagmi config hold Base alone. The "Wallet not on Base" hint reads the wallet's
 real chain from `useAccount().chainId` — `useChainId()` only reports configured
-chains, so with Base-only config it stays 8453 and the hint would never show. The same applies to writes: `useVaultWrite` and `useSafeFunding` compare `useAccount().chainId` to Base before `switchChainAsync`, or a wallet left on Ethereum skips the switch and viem rejects the write.
+chains, so with Base-only config it stays 8453 and the hint would never show. The same applies to writes: `useVaultWrite` compares `useAccount().chainId` to Base before `switchChainAsync`, or a wallet left on Ethereum skips the switch and viem rejects the write.
 
 ### 4.4 Vault overview, liquidity, and history (Morpho GraphQL)
 
@@ -534,7 +517,7 @@ chains, so with Base-only config it stays 8453 and the hint would never show. Th
 - **Fees** — performance and management fee rates and recipients. **Claim fees**
   (`ClaimFeesButton`) quotes `accrueInterestView` + `previewRedeem` and sends
   `v2WriteConfigs.accrueInterest`, which mints the pending fees as vault shares
-  to those recipients. Safe rows holding that call decode as **Claim fees**.
+  to those recipients. Anyone connected may send it.
 - Analytics object from `lib/morpho/vault-analytics.ts` (`buildVaultAnalytics`).
 
 **History chart** — `VaultOverviewHistoryChart` + `GET /api/vaults/[id]/history`
@@ -829,7 +812,7 @@ Detail KPIs: filled size (`total_units`), lender credit and borrower debt
 (summed from `/positions`), open lend/borrow offers, best lend/borrow rates, per-collateral
 LLTV / liquidation cursor / oracle panel (price, freshness, Chainlink feeds on Base),
 asks & bids.
-Curator top-nav area holds Curator tools (`/curator`) + Multisig Safe.
+Curator top-nav area holds Curator tools (`/curator`). `/safe` redirects there.
 
 **Wallet positions / lend-borrow** — not in this dashboard. Blue market detail
 **Interact** links the Morpho app; Midnight uses **Trade on Morpho**. Writes:
@@ -1161,13 +1144,11 @@ components.
   because any caller can send them.
 - Write UI (reallocate, caps, etc.) is gated on both wallet connection and
   curator role.
-- **All on-chain writes** (V1/V2 reallocate, caps, etc.) go through
-  **Reown AppKit → connected wallet** (`useVaultWrite` / wagmi `writeContract`).
+- **All on-chain writes** (reallocate, caps, sentinel, fees, pending accept/revoke)
+  go through **Reown AppKit → connected wallet** (`useVaultWrite` / wagmi
+  `writeContract`). The preview dialog confirms only when that wallet holds the
+  required role (`lib/vault/write-destination.ts`). There is no Safe queue.
   Do not add server-side private keys for allocation flows.
-- **Multisig Safe writes** — when a vault's on-chain allocator/sentinel is a
-  role Safe (`lib/safe/config.ts`), queue proposals from Allocation /
-  Sentinel preview dialogs; owners sign EIP-712 on `/safe/[role]`.
-  Direct wallet confirm remains for EOA role holders only (`lib/safe/vault-role-match.ts`).
 - Wallet connect lives in the **topbar** (`ConnectWalletButton` / Reown
   AppKit). Featured wallets are configured in `lib/wallet/appkit.ts`. The app
   and the wallet stay on Base. The account sheet labels the network; it does
@@ -1201,7 +1182,7 @@ components.
 - For market caps, confirm `cap.adapterAddress` from governance and full market
   params (oracle, irm, lltv) from the risk API are used in
   `encodeMarketCapIdData`.
-- Deallocate Blue markets: `data = encodeMarketParamsData(market)`.
+- Deallocate Blue markets: `data = encodeMarketParamsData(market)`. `data` is never `0x` for a Blue market, and the call needs the booked `allocation(id)`.
 - New absolute/relative cap on decrease must be **≤ current** on-chain cap.
 - Relative cap input is human **percent** (0–100); convert to WAD with
   `parseUnits(pct, 16)` — exact. `Math.round(pct * 1e16)` is a few wei off for
@@ -1428,7 +1409,7 @@ Ranges in `package.json` match the installed versions. Do not take these majors:
 | Markets browser UI               | `components/morpho/CuratorMarketsBrowser.tsx`, `lib/morpho/market-pair-filter.ts`, `app/markets/page.tsx` |
 | Market detail + oracle panel     | Blue: `app/market/blue/[id]/page.tsx`; Midnight: `MidnightMarketView` + `MarketOraclePanel`; `lib/morpho/oracle-price.ts` |
 | Create Blue market / vault deposit | not in this dashboard |
-| Amount MAX (Safe send/receive)   | `components/morpho/AmountMaxInput.tsx` |
+| Amount MAX input                 | `components/morpho/AmountMaxInput.tsx` |
 | Nav areas                        | `lib/nav/areas.ts`, `components/layout/Topbar.tsx`, `Sidebar.tsx` |
 | Oracle Portal link               | `MORPHO_ORACLE_PORTAL_URL` in `lib/constants/links.ts` → https://oracles.morpho.dev/ |
 | Brain / session loop             | `docs/brain/`, `.cursor/mcp.json` |
@@ -1445,221 +1426,17 @@ Ranges in `package.json` match the installed versions. Do not take these majors:
 | Vault transactions (paginated)   | `components/morpho/VaultTransactions.tsx`                |
 | Holders API (V1/V2)              | `app/api/vaults/[id]/holders/route.ts`                   |
 | Transactions API                 | `app/api/vaults/[id]/transactions/route.ts`              |
-| Multisig Safe UI + queue         | `app/safe/`, `components/safe/*`                          |
-| Safe config + Protocol Kit       | `lib/safe/config.ts`, `lib/safe/protocol-kit-client.ts`  |
-| Safe pending store (localStorage)| `lib/safe/pending-store.ts`, `lib/safe/queue-vault-write.ts` |
-| Safe Transaction Service         | `lib/safe/transaction-service.ts`, `lib/safe/service-sync.ts` |
-| Safe API rate limit (client)     | `lib/safe/transaction-service-rate-limit.ts`             |
-| Safe Apps SDK                    | `lib/safe/safe-apps-context.tsx`, `public/manifest.json` |
-| Safe vault write routing         | `lib/safe/vault-role-match.ts`, `lib/safe/build-vault-calldata.ts` |
-| Safe calldata preview            | `lib/safe/decode-vault-calldata-preview.ts`              |
-| Safe post-execute refetch        | `lib/safe/refetch-vault-after-safe-execute.ts`           |
-| Safe on-chain info API           | `app/api/safe/[address]/info/route.ts`, `lib/safe/onchain-reads.ts` |
+| Wallet role checks for writes    | `lib/vault/write-destination.ts`                         |
 
 ---
 
-## 13. Multisig Safe (Curator)
+## 13. Multisig Safe (removed)
 
-`/safe` manages Allocator and Sentinel Safes on Base. Default tab: `/safe/allocator`. Under
-top-nav **Curator**: Curator tools → Multisig Safe.
+There is no Safe workspace, Safe Transaction Service client, or `@safe-global` package. Vault writes are signed by the connected wallet through `useVaultWrite`. That wallet must hold the on-chain role (allocator, sentinel, or curator). Role checks live in `lib/vault/write-destination.ts`.
 
-### 13.1 Role Safes (`lib/safe/config.ts`)
+`/safe` and `/curator/safe` redirect to `/curator`. Do not re-add `lib/safe/`, `app/safe/`, `components/safe/`, `app/api/safe/`, or `NEXT_PUBLIC_SAFE_API_KEY`.
 
-| Role | Purpose |
-| ---- | ------- |
-| Owner | Owner multisig |
-| Curator | Curator multisig |
-| Allocator | Vault rebalances queued here |
-| Sentinel | Cap decreases + deallocations queued here |
-
-Workspace link: the Safe on `app.safe.global` (`lib/safe/links.ts`).
-
-### 13.2 Transaction flow
-
-1. **Queue** — From a vault **Allocation** or **Sentinel** tab, use the tx
-   preview dialog. When governance lists the Allocator or Sentinel Safe as
-   the vault role holder, the dialog is **Safe-only** (`vault-role-match.ts`).
-   Queue builds a Safe meta-tx via Protocol Kit (RPC) and stores it in
-   **browser localStorage** (`pending-store.ts`). With `NEXT_PUBLIC_SAFE_API_KEY`
-   and a connected proposer wallet, auto-share also signs EIP-712 and proposes
-   to the Transaction Service; Safe App embed uses `sdk.txs.send` instead.
-2. **Sign** — On `/safe/[role]`, connect a **Safe owner** hot wallet in
-   the topbar. **Sign (EIP-712)** adds owner signatures locally. Sign, Share and
-   auto-share rebuild the Safe tx from its stored fields and check it hashes to
-   the stored `safeTxHash` **before** signing — a service-imported row carries
-   the service's hash next to separate `to`/`data`, and the owner reads a
-   preview decoded from `data`.
-3. **Execute** — Once signatures ≥ threshold, **any connected wallet** may
-   **Execute on-chain** (`execTransaction` is permissionless); owners are only
-   required to **sign**. The **Safe address** calls the vault contract.
-   `executeSafePendingTransaction` returns `execTransaction` calldata that the
-   wagmi wallet sends with **`value: 0`** — never the inner tx's value, or the
-   executor pays for ETH the Safe sends out. It re-checks the on-chain threshold
-   and the Safe's ETH balance first (protocol-kit's own pre-checks). The row is
-   marked **executed only after the receipt succeeds**; a revert keeps it queued
-   (and its nonce reserved) with the hash linked. Then Curator refetches vault
-   risk, governance, pending, reallocations, overview, and the Safe header/assets
-   (`refetch-vault-after-safe-execute.ts` — matches query keys by address
-   **case-insensitively**; vault pages key on lowercase config addresses).
-   Wallet/chain/threshold errors surface on the row; a ref guard stops a
-   double-click from starting two executions.
-
-Export/import JSON shares proposals between owners/browsers.
-
-**Dual storage model** — localStorage is always the source of truth in Curator;
-Transaction Service is an optional sync layer:
-
-1. **Queue** always writes to localStorage first.
-2. **Auto-share** (when `NEXT_PUBLIC_SAFE_API_KEY` is set and a proposer wallet is
-   connected): signs EIP-712 and calls `proposeTransaction` via
-   `@safe-global/api-kit` (^5.x; same `proposeTransaction` / `confirmTransaction`
-   surface used by Allocation and Sentinel queue flows).
-3. **Safe App embed** (`CuratorSafeAppsProvider`): when opened inside
-   `app.safe.global`, queue can call `sdk.txs.send` after building the same
-   meta-tx locally; marks `serviceSynced`.
-4. **Sync from service** on `/safe/[role]` merges pending txs from the
-   Transaction Service into localStorage (signatures included).
-5. **Share with owners** on unsynced rows re-proposes to the service.
-6. **Sign** posts `confirmTransaction` to the service when `serviceSynced` is true.
-
-`public/manifest.json` uses `iconPath`: `favicon.svg` + CSP `frame-ancestors`
-allow Safe App listing. Env: `NEXT_PUBLIC_SAFE_API_KEY` (https://developer.safe.global).
-Free tier is **5 req/s** and **50K req/month** — Curator only calls the service on
-queue (propose), sign (confirm), share, and manual **Sync from service** (no polling);
-client serializes calls with ≥210ms spacing.
-
-### 13.3 API
-
-- `GET /api/safe/[address]/info` (configured Safes only, 404 otherwise; rate limited; same for `balances`) — owners, threshold, nonce, version, native
-  ETH balance (`ethBalance` raw string), and Transaction Service **proposers**
-  (delegates who can propose without being owners). Proposers require
-  `NEXT_PUBLIC_SAFE_API_KEY`; returns `proposersConfigured: false` when unset.
-  Cached ≤15s. Reads are one **multicall**, not four `eth_call`s.
-- `GET /api/safe/[address]/balances?tokens=0x…,0x…` — on-chain balances for the
-  curated token set (native ETH, USDC/WETH/cbBTC, every configured vault's
-  shares) plus any comma-separated extra addresses. One multicall; unknown
-  tokens also resolve `symbol`/`name`/`decimals` in the same batch and are
-  dropped if the reads fail. Cached ≤15s. There is **no** Safe Transaction
-  Service balances call — the free tier is 5 req/s and this route is on the
-  hot path.
-- `GET /api/safe/[address]/history` — executed multisig txs from the Transaction
-  Service (`getMultisigTransactions`, executed only). On-demand; same rate
-  limit. Requires `NEXT_PUBLIC_SAFE_API_KEY`.
-- `GET /api/safe/[address]/settings` — on-chain modules + guard
-  (`readSafeOnChainSettings`). Address book is client-only
-  (`lib/safe/address-book.ts`).
-
-### 13.3.1 Assets, send and receive
-
-`/safe/[role]` is five route segments — **Home** (`page.tsx`, owners/proposers/
-details), **Assets** (`assets/`), **Transactions** (`transactions/`, the queue),
-**History** (`history/`, executed txs), **Settings** (`settings/`, modules,
-guard, address book)
-— under a shared `layout.tsx` that renders `SafeAccountHeader` (chain-prefixed
-`base:0x…` address, copy, threshold, ETH balance, Send/Receive) and
-`SafeRoleSubnav`.
-
-- **Send from a Safe** is a normal Safe proposal: `buildSafeTransferCalldata`
-  emits a native value transfer or an ERC-20 `transfer`, `queueSafeTransfer`
-  wraps it via `queueSafeTransaction`, and it then follows the existing
-  queue → sign → execute path. Available on **all five roles** — a proposal
-  confers no privilege on its own. Operation is always `Call`, never
-  `DelegateCall`.
-- **Receive** shows a QR of the `base:`-prefixed address plus a direct
-  wallet → Safe transfer (`useSafeFunding`), which needs no signatures.
-- **Balances** are read on-chain only. A Safe can hold any token, so unknown
-  ones are added by address and persisted per role in localStorage
-  (`custom-token-store.ts`) — there is no indexer to enumerate them.
-- Safe amounts render with `SAFE_AMOUNT_DP` (6), not the app-wide default of 2:
-  an ETH gas float and share dust both round to `0.00` at two places.
-- Vault-share rows use the **vault name** as the symbol — several vaults share
-  an asset, so `USDC shares` cannot tell two balances apart.
-
-### 13.4 Key files
-
-| Concern | File |
-| ------- | ---- |
-| Queue any Safe tx | `lib/safe/queue-vault-write.ts` (`queueSafeTransaction`, `queueSafeBatch`) |
-| Queue from vault | `lib/safe/build-vault-calldata.ts` |
-| Queue a transfer | `lib/safe/queue-transfer.ts`, `build-transfer-calldata.ts` |
-| Token registry + balances | `lib/safe/tokens.ts`, `read-balances.ts`, `custom-token-store.ts` |
-| Assets / send / receive UI | `components/safe/SafeAssetsPanel.tsx`, `SafeSendDialog.tsx`, `SafeReceiveDialog.tsx`, `SafeModal.tsx` |
-| History / settings UI | `components/safe/SafeHistoryPanel.tsx`, `SafeSettingsPanel.tsx`, `lib/safe/address-book.ts` |
-| Safe page shell | `app/safe/[role]/layout.tsx`, `components/safe/SafeAccountHeader.tsx`, `SafeRoleSubnav.tsx` |
-| Fund a Safe from a wallet | `lib/hooks/useSafeFunding.ts` |
-| Calldata preview decode | `lib/safe/decode-vault-calldata-preview.ts` |
-| Post-execute refetch | `lib/safe/refetch-vault-after-safe-execute.ts` |
-| Sign / execute | `lib/safe/protocol-kit-client.ts` |
-| Transaction Service sync | `lib/safe/transaction-service.ts`, `lib/safe/service-sync.ts` |
-| API rate limit | `lib/safe/transaction-service-rate-limit.ts` |
-| Safe Apps SDK | `lib/safe/safe-apps-context.tsx`, `public/manifest.json` |
-| UI queue | `components/safe/SafeTransactionQueue.tsx` |
-| Hooks | `useSafeInfo`, `useSafeBalances`, `useSafePending`, `useSafeTransactionActions` |
-
-### 13.5 Do not regress
-
-- Rebuild Safe tx with stored nonce/gas before **sign and** execute; verify `safeTxHash`.
-- Execute drops owner signatures that do not recover to their signer (`verify-signature.ts`; contract and approved-hash signatures are left to the Safe), so one bad signature cannot make the threshold look met.
-- MultiSend batching also reads the Transaction Service at the on-chain nonce and refuses when that read fails or a proposal outside the batch has a later nonce.
-- Execute marks a row **executed** only when the receipt also carries the Safe's `ExecutionSuccess` for that `safeTxHash` (both layouts: v1.3.0 `txHash` in `data`, v1.4.1+ indexed in `topics[1]`) (`safeExecutionOutcome`, `lib/safe/execution-outcome.ts`). `ExecutionFailure` (inner revert caught because `safeTxGas` / `gasPrice` ≠ 0) spends the nonce: the row goes **stale** and the user is told nothing changed. With neither event for that hash (`unknown`) the row stays queued with the hash linked and the user is asked to check it — never reported as executed.
-- Sync from service never moves an executed / stale / cancelled row back into the queue (`isTerminalSafeStatus`): the service indexer lags execution.
-- The queue's count also drops signatures that do not recover to their signer (`signatureMatchesSigner`, checked async), the same rule execute applies.
-- Only **current owners'** signatures count toward the threshold — the queue's count and Execute button (`countOwnerSignatures`) and the execute pre-check (`getOwners()`). Execute readiness comes from that count, not the stored status.
-- Bundle import: a new row's role comes from `getSafeByAddress` (rows for Safes not in `lib/safe/config.ts` are skipped), status resets to `awaiting_signatures`, signatures are validated, and one malformed row is skipped (reported) instead of failing the import.
-- `fetchPendingMultisigTransactions` reads every page; pass the known on-chain nonce as `currentNonce` to save the service's own nonce read.
-- Safe App queue with a different `safeTxHash`: adopt it only with every field from the matching service row; with no match keep the local row and tell the user to sync. Batching refuses a nonce below the on-chain nonce.
-- Execute sends `value: 0`; mark executed only on a successful receipt.
-- DelegateCall hazards (`lib/safe/multisend.ts`, `safePendingWarnings`): a
-  DelegateCall to anything but a canonical Base MultiSend / MultiSendCallOnly,
-  or a nested DelegateCall inside a MultiSend, is shown in red and **blocked**
-  from sign/share/execute. `inferSafeTxSource` never labels a DelegateCall as a
-  transfer or vault write. MultiSend batches get a per-call decoded preview.
-- Vault `multicall` / `submit` inner calls the Vault V2 ABI cannot decode are
-  kept in the preview (ERC-20 calls named) and warned on the card — never
-  silently dropped.
-- A MultiSend batch must include the **last** queued nonce for that Safe
-  (`prepareSafeBatchSelection(txs, queue)`): folding N rows into one nonce
-  frees N−1 nonces and would strand any later signed proposal forever.
-- Bundle import merges signatures into a proposal already held locally
-  (union by signer) instead of overwriting it, and drops any imported
-  `simulationWarning` (only Curator writes that, at queue time).
-- Send's address-book upsert passes an empty label, which keeps an existing
-  saved label (`upsertAddressBookEntry`).
-- Safe Receive shows Confirmed only for a successful receipt; Failed otherwise.
-- V2 calldata: deallocates before allocates in multicall batches.
-- Cap preview amounts use asset display decimals (`formatCapRawAmount` in
-  `allocation-display.ts`), not zero decimal places.
-- localStorage remains authoritative; Transaction Service sync is additive.
-- Do not drop export/import when adding service features.
-- Queue cards always show a tx preview — stored preview or decoded vault calldata.
-- A `transfer` source must not resolve to a vault link: an ERC-20 share transfer
-  targets the vault contract but is not a vault operation
-  (`resolveVaultAddressFromPending`).
-- `initSafeProtocolKit` caches only the **read-only** kit (fixed Base RPC, so it
-  cannot go stale); a failed init must be evicted or every later call replays
-  the error. Never cache a signer-bound kit — it captures the wallet's chain id
-  at init and would sign for the wrong chain after a network switch.
-- Dialogs that carry a preselection (`SafeSendDialog`) must mount only while
-  open. Left mounted, `useState(initialToken)` keeps the first mount's value and
-  every later launch preselects the wrong asset.
-- Post-queue redirects go to `/safe/[role]/transactions`, not `/safe/[role]`.
-- Next Safe nonce comes from on-chain **plus** queued local proposals
-  (`resolveNextSafeNonce`) so two queued txs cannot share a nonce.
-- Sign/execute use the AppKit/wagmi provider and switch to Base first.
-- Over-allocated rebalance plans fail closed (do not trim then submit).
-- `queueSafeTransaction` eth_calls the inner tx **from the Safe** before
-  queueing (`checkSafeCallBeforeQueue`, `lib/safe/simulate-safe-call.ts`) so a
-  call that would revert (stale cap, wrong role, insufficient balance) is never
-  signed. The simulation sees today's state, not the state after proposals
-  queued ahead execute, so with any unexecuted proposal queued for that Safe a
-  revert is stored as `simulationWarning` (shown on the card, not blocking)
-  instead of refusing — nonce N funding the Safe and N+1 spending it must
-  still queue (`safeCallRevertOutcome`). "Queued ahead" counts local and Transaction Service rows **at or above the on-chain nonce**, once per `safeTxHash` (`countDistinctQueuedProposals`) — a proposal made in another browser lives only on the service until a manual sync, and a local row another client already executed is stale and must not turn a dead call into a warning. Read only after a revert; a failed service read uses local rows, a failed nonce read keeps every row. Only a revert blocks; an RPC failure does not (an emergency sentinel
-  proposal must not depend on a flaky RPC). MultiSend batches are DelegateCalls
-  and are not simulated here; the Allocation rebalance path already simulates
-  as the Safe (`simulateVaultRebalance`).
-- Sentinel deallocate requires booked `allocation(id)` and market params
-  (`data` is never `0x` for a Blue market).
+Activity (`GET /api/vaults/[id]/activity`) is Morpho allocation transactions plus pending governance submits. It does not load executed governance from a Safe history.
 
 ---
 
@@ -1833,18 +1610,13 @@ substantive changes, run `npm test`, `npm run lint`, and `npm run build`.
 
 Tests live next to the code as `lib/**/*.test.ts` (not under `__tests__/`), and
 cover pure logic only. Do not call wagmi hooks from tests; mock React Query
-hooks at module level. Tests must never hit the network — the Safe token tests
-assert declared decimals are *plausible*, and on-chain agreement is verified
-out of band, not in CI.
+hooks at module level. Tests must never hit the network. On-chain agreement is
+verified out of band, not in CI.
 
 Existing suites worth extending: `lib/utils/rate-limit.test.ts` (Vercel client
-IP, ignored forwarding headers), `lib/safe/*.test.ts`
-(transfer calldata, token registry, calldata preview decoding),
-`lib/config/vaults.test.ts`.
+IP, ignored forwarding headers), `lib/config/vaults.test.ts`.
 
-Also covered: `lib/safe/multisend.test.ts` (DelegateCall hazards, MultiSend
-decode), `lib/safe/pending-store.test.ts` (import signature merge),
-`lib/safe/address-book.test.ts`, `lib/morpho/morpho-app-links.test.ts`
+Also covered: `lib/morpho/morpho-app-links.test.ts`
 (return-path open redirect), `lib/morpho/cap-decrease-input.test.ts`,
 `lib/onchain/v2-rebalance-plan.test.ts` (idle re-anchor, % rounding),
 `lib/utils/error-handler.test.ts`,
@@ -1853,8 +1625,7 @@ decode), `lib/safe/pending-store.test.ts` (import signature merge),
 `lib/onchain/allocation-dust.test.ts`,
 `lib/morpho/oracle-display.test.ts`, `oracle-decode.server.test.ts` (meta oracle
 active source), `market-activity-math.test.ts` (collateral at risk, V2 vault
-allocation via adapters), `vault-activity.test.ts` (Safe/MultiSend governance
-decode, roles, adapter summary).
+allocation via adapters), `vault-activity.test.ts` (roles, pending match, adapter summary).
 
 Still uncovered and high value: `lib/morpho/tx-preview.ts`.
 
@@ -1875,6 +1646,6 @@ list/filters (§5), caps/adapters display, V2 idData/Sentinel (§3.2, §4.2), tx
 preview, client fetch/cache (§4.3), app/API route paths (§2, §4.7, `next.config.ts`
 redirects), Morpho GraphQL field names (§4.4.1), Curator markets browser (§4.7),
 vault list/sidebar (§4.3.1), vault overview/history (share price in §4.4), risk scoring (§4.5), V2 idle/Blue display (§3.2.1), pending/emergency
-tabs, wallet stack, Multisig Safe (§13), formatting, CCTP status (§14 removed), global
+tabs, wallet stack, Safe removal (§13), formatting, CCTP status (§14 removed), global
 density (§16), brain/MCP (`docs/brain/`), or add a new vault interaction, update Sections 3–6, 4.2–4.7, 9–10,
 13–14, 16–18 accordingly, and append `docs/brain/CHANGELOG.md`._

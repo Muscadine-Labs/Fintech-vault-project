@@ -17,7 +17,7 @@ export interface VaultAddressConfig {
   assetSymbol: VaultAssetSymbol;
   /**
    * The asset's decimals. Needed for an asset other than USDC, USDT, DAI, WETH or a BTC token
-   * (those are known): Safe previews format amounts with it before anyone signs.
+   * (those are known): previews format amounts with it before anyone signs.
    */
   assetDecimals?: number;
   /** Shown when Morpho has not returned a name yet. */

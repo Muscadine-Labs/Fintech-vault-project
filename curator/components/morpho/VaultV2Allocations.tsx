@@ -2,7 +2,6 @@
 
 import Link from 'next/link';
 import { useMemo, useState, useCallback, useEffect, useRef, type ReactNode } from 'react';
-import { useRouter } from 'next/navigation';
 import { useQueryClient } from '@tanstack/react-query';
 import { Skeleton } from '@/components/ui/skeleton';
 import { AlertTriangle, CheckCircle2, Loader2, Pencil } from 'lucide-react';
@@ -20,18 +19,7 @@ import { TxPreviewDialog } from '@/components/morpho/TxPreviewDialog';
 import { isBroadcastTxHash, isWalletRejection } from '@/lib/utils/wallet-error';
 import { buildAllocationRebalancePreview } from '@/lib/morpho/tx-preview';
 import type { TxPreview } from '@/lib/morpho/tx-preview';
-import { queueVaultRebalanceInSafe } from '@/lib/safe/queue-vault-write';
-import { getConnectorProvider } from '@/lib/wallet/connector-provider';
-import { useCuratorSafeApps } from '@/lib/safe/safe-apps-context';
-import {
-  defaultAllocationDestination,
-  eligibleSafeRolesForAddresses,
-  canConfirmVaultWriteDestination,
-  coerceVaultWriteDestination,
-  walletCanSignAllocation,
-  type VaultWriteDestination,
-} from '@/lib/safe/vault-write-destination';
-import { ALLOCATION_SAFE_ROLE, getSafeByRole, type SafeRole } from '@/lib/safe/config';
+import { walletCanSignAllocation } from '@/lib/vault/write-destination';
 import { v2WriteConfigs } from '@/lib/onchain/vault-writes';
 import type { Address, Hex } from 'viem';
 import {
@@ -859,11 +847,6 @@ export function VaultV2Allocations({
   const [dustRecipientKey, setDustRecipientKey] = useState<DustRecipientChoice>('auto');
   const [rebalancePreviewOpen, setRebalancePreviewOpen] = useState(false);
   const [preparingPreview, setPreparingPreview] = useState(false);
-  const [queueingSafe, setQueueingSafe] = useState(false);
-  const [queueSafeError, setQueueSafeError] = useState<string | null>(null);
-  const [writeDestination, setWriteDestination] = useState<VaultWriteDestination>(() =>
-    defaultAllocationDestination(governance?.allocators, undefined)
-  );
   const [preparedSubmit, setPreparedSubmit] = useState<{
     rows: RebalancePlanRow[];
     preview: TxPreview;
@@ -871,32 +854,15 @@ export function VaultV2Allocations({
   const multicallWrite = useVaultWrite({ chainId: chainId ?? BASE_CHAIN_ID });
   const resetMulticallWrite = multicallWrite.reset;
   const publicClient = usePublicClient({ chainId: chainId ?? BASE_CHAIN_ID });
-  const { address: walletAddress, isConnected, connector } = useAccount();
-  const router = useRouter();
-  const { connected: safeAppConnected, sdk: safeAppSdk, safeRole: safeAppRole } =
-    useCuratorSafeApps();
-  const allocatorSafeAppSdk = useMemo(
-    () =>
-      safeAppConnected &&
-      safeAppSdk &&
-      writeDestination.kind === 'safe' &&
-      safeAppRole === writeDestination.role
-        ? safeAppSdk
-        : null,
-    [safeAppConnected, safeAppSdk, safeAppRole, writeDestination]
-  );
+  const { address: walletAddress, isConnected } = useAccount();
 
   const walletCanAllocate = walletCanSignAllocation(walletAddress, governance?.allocators);
   const walletReady = isConnected && walletCanAllocate;
   const allocationWalletHint = !isConnected
     ? 'Connect your wallet in the top bar to sign directly with your EOA.'
     : !walletCanAllocate
-      ? 'Connected wallet is not an on-chain allocator for this vault — switch to an allocator EOA or queue to a Safe.'
+      ? 'Connected wallet is not an on-chain allocator for this vault — switch to an allocator wallet.'
       : undefined;
-  const eligibleAllocatorSafes = useMemo(
-    () => eligibleSafeRolesForAddresses(governance?.allocators),
-    [governance?.allocators]
-  );
 
   useEffect(() => {
     if (!multicallWrite.isSuccess) return;
@@ -1620,15 +1586,6 @@ export function VaultV2Allocations({
         rows: finalized.rows,
         preview: basePreview,
       });
-      setWriteDestination(
-        coerceVaultWriteDestination(
-          defaultAllocationDestination(governance?.allocators, walletAddress),
-          {
-            eligibleSafeRoles: eligibleSafeRolesForAddresses(governance?.allocators),
-            preferredSafeRole: ALLOCATION_SAFE_ROLE,
-          }
-        )
-      );
       setRebalancePreviewOpen(true);
     } catch {
       setSubmitError('Could not prepare rebalance preview — try again.');
@@ -1640,8 +1597,6 @@ export function VaultV2Allocations({
     publicClient,
     finalizePlanRows,
     previewFromRows,
-    governance?.allocators,
-    walletAddress,
   ]);
 
   const handleRebalance = useCallback(async () => {
@@ -1729,109 +1684,15 @@ export function VaultV2Allocations({
     previewFromRows,
   ]);
 
-  const handleQueueInSafe = useCallback(
-    async (safeRole: SafeRole) => {
-      if (!preparedSubmit) return;
-
-      setQueueingSafe(true);
-      setQueueSafeError(null);
-
-      try {
-        if (!publicClient) {
-          setQueueSafeError('Connect a wallet so the app can simulate the rebalance on-chain.');
-          return;
-        }
-        const finalized = await finalizePlanRows(preparedSubmit.rows);
-        if (finalized.error) {
-          setQueueSafeError(finalized.error);
-          return;
-        }
-        if (
-          rebalanceCallsFingerprint(preparedSubmit.rows) !==
-          rebalanceCallsFingerprint(finalized.rows)
-        ) {
-          const nextPreview = previewFromRows(finalized.rows);
-          setPreparedSubmit({
-            rows: finalized.rows,
-            preview: nextPreview ?? preparedSubmit.preview,
-          });
-          setQueueSafeError(PLAN_MOVED_ERROR);
-          return;
-        }
-        await simulateVaultRebalance({
-          client: publicClient,
-          vault: getAddress(vaultAddress),
-          account: getSafeByRole(safeRole).address,
-          rows: finalized.rows,
-        });
-        await queueVaultRebalanceInSafe({
-          vaultAddress: getAddress(vaultAddress),
-          submitRows: finalized.rows,
-          preview: preparedSubmit.preview,
-          vaultSymbol,
-          safeRole,
-          proposer: walletAddress ? getAddress(walletAddress) : undefined,
-          provider: await getConnectorProvider(connector),
-          safeAppSdk: allocatorSafeAppSdk,
-        });
-        setRebalancePreviewOpen(false);
-        setPreparedSubmit(null);
-        setEditing(false);
-        setInputValues([]);
-        router.push(`/safe/${safeRole}/transactions`);
-      } catch (error) {
-        setQueueSafeError(
-          error instanceof Error ? error.message : 'Failed to queue Safe transaction.'
-        );
-      } finally {
-        setQueueingSafe(false);
-      }
-    },
-    [
-      allocatorSafeAppSdk,
-      connector,
-      finalizePlanRows,
-      preparedSubmit,
-      previewFromRows,
-      publicClient,
-      vaultAddress,
-      vaultSymbol,
-      walletAddress,
-      router,
-    ]
-  );
-
   const handlePreviewConfirm = useCallback(async () => {
-    if (
-      !canConfirmVaultWriteDestination(writeDestination, {
-        walletReady,
-        eligibleSafeRoles: eligibleAllocatorSafes,
-      })
-    ) {
-      if (writeDestination.kind === 'wallet') {
-        setSubmitError(
-          allocationWalletHint ??
-            'Connect an allocator wallet in the top bar, or queue to a role multisig.'
-        );
-      } else {
-        setQueueSafeError('Selected Safe is not an on-chain allocator for this vault.');
-      }
-      return;
-    }
-
-    if (writeDestination.kind === 'safe') {
-      await handleQueueInSafe(writeDestination.role);
+    if (!walletReady) {
+      setSubmitError(
+        allocationWalletHint ?? 'Connect an allocator wallet in the top bar.'
+      );
       return;
     }
     await handleRebalance();
-  }, [
-    writeDestination,
-    walletReady,
-    allocationWalletHint,
-    eligibleAllocatorSafes,
-    handleQueueInSafe,
-    handleRebalance,
-  ]);
+  }, [walletReady, allocationWalletHint, handleRebalance]);
 
   const getEditedAllocationDisplay = useCallback(
     (targetIdx: number): { raw: bigint; pct: number; usd: number } => {
@@ -2402,41 +2263,25 @@ export function VaultV2Allocations({
               open={rebalancePreviewOpen}
               preview={preparedSubmit?.preview ?? null}
               onOpenChange={(open) => {
-                if (!open && queueingSafe) return;
                 if (!open && isBroadcastTxHash(multicallWrite.txHash) && multicallWrite.isLoading) {
                   return;
                 }
                 setRebalancePreviewOpen(open);
                 if (!open) {
                   setPreparedSubmit(null);
-                  setQueueSafeError(null);
                   if (!isBroadcastTxHash(multicallWrite.txHash)) {
                     multicallWrite.reset();
                   }
                 }
               }}
               destinationOptions={{
-                destination: writeDestination,
-                onDestinationChange: setWriteDestination,
                 walletReady,
                 walletHint: allocationWalletHint,
-                safeRoles: eligibleAllocatorSafes,
-                confirmEnabled: canConfirmVaultWriteDestination(writeDestination, {
-                  walletReady,
-                  eligibleSafeRoles: eligibleAllocatorSafes,
-                }),
+                confirmEnabled: walletReady,
               }}
               onConfirm={() => handlePreviewConfirm()}
-              isLoading={
-                writeDestination.kind === 'safe' ? queueingSafe : multicallWrite.isLoading
-              }
-              error={
-                writeDestination.kind === 'safe'
-                  ? queueSafeError
-                    ? new Error(queueSafeError)
-                    : null
-                  : submitError ?? multicallWrite.error
-              }
+              isLoading={multicallWrite.isLoading}
+              error={submitError ?? multicallWrite.error}
             />
 
             {multicallWrite.txHash && (

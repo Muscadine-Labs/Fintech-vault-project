@@ -67,8 +67,6 @@ Copy `.env.example` → `.env.local`. Summary:
 | `ALCHEMY_API_KEY` | Recommended | Server RPC; public Base RPC if missing |
 | `NEXT_PUBLIC_ALCHEMY_API_KEY` | Recommended | Client RPC |
 | `NEXT_PUBLIC_APP_URL` | No | If unset: `http://localhost:3001` locally, the Vercel production domain on Vercel |
-| `NEXT_PUBLIC_SAFE_API_KEY` | Recommended | Safe Transaction Service history (free tier) |
-
 ## Scripts
 
 - `npm run dev` - Start development server

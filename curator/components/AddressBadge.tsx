@@ -14,7 +14,7 @@ interface AddressBadgeProps {
   showCopy?: boolean;
   className?: string;
   truncate?: boolean;
-  /** Show a role label (`auto` = Public Allocator / Safe / EOA). */
+  /** Show a role label (`auto` = Public Allocator / EOA). */
   label?: string | 'auto';
 }
 

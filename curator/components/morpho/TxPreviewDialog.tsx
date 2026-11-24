@@ -7,22 +7,12 @@ import { Button } from '@/components/ui/button';
 import { cn } from '@/lib/utils';
 import type { TxPreview, TxPreviewChange } from '@/lib/morpho/tx-preview';
 import { txPreviewActionLabel } from '@/lib/morpho/tx-preview';
-import {
-  confirmLabelForDestination,
-  loadingLabelForDestination,
-  type VaultWriteDestination,
-} from '@/lib/safe/vault-write-destination';
-import type { SafeRole } from '@/lib/safe/config';
-import { VaultWriteDestinationSelect } from '@/components/morpho/VaultWriteDestinationSelect';
 import { TxErrorBanner } from '@/components/TxErrorBanner';
 import { isBroadcastTxHash } from '@/lib/utils/wallet-error';
 
 export interface VaultWriteDestinationOptions {
-  destination: VaultWriteDestination;
-  onDestinationChange: (destination: VaultWriteDestination) => void;
   walletReady: boolean;
   walletHint?: string;
-  safeRoles?: ReadonlyArray<SafeRole>;
   confirmEnabled?: boolean;
 }
 
@@ -143,12 +133,7 @@ export function TxPreviewDialog({
   isSuccessRef.current = isSuccess;
   const submitted = isBroadcastTxHash(txHash);
   const waitingForReceipt = submitted && isLoading && error == null && !isSuccess;
-  const queueingSafe =
-    destinationOptions?.destination.kind === 'safe' &&
-    isLoading &&
-    error == null &&
-    !isSuccess;
-  const blocked = waitingForReceipt || Boolean(queueingSafe);
+  const blocked = waitingForReceipt;
 
   const dismiss = useCallback(() => {
     if (blocked) return;
@@ -215,14 +200,8 @@ export function TxPreviewDialog({
 
   if (!mounted || !open || !preview) return null;
 
-  const confirmLabel = destinationOptions
-    ? confirmLabelForDestination(destinationOptions.destination)
-    : 'Confirm & sign';
-  const loadingLabel = submitted
-    ? destinationOptions
-      ? loadingLabelForDestination(destinationOptions.destination)
-      : 'Confirming…'
-    : 'Waiting for wallet…';
+  const confirmLabel = 'Confirm & sign';
+  const loadingLabel = submitted ? 'Confirming…' : 'Waiting for wallet…';
   const confirmDisabled =
     isLoading ||
     locked ||
@@ -317,15 +296,11 @@ export function TxPreviewDialog({
           </p>
         )}
 
-        {destinationOptions && (
-          <VaultWriteDestinationSelect
-            destination={destinationOptions.destination}
-            onChange={destinationOptions.onDestinationChange}
-            walletReady={destinationOptions.walletReady}
-            walletHint={destinationOptions.walletHint}
-            safeRoles={destinationOptions.safeRoles}
-          />
-        )}
+        {destinationOptions && !destinationOptions.walletReady && destinationOptions.walletHint ? (
+          <p className="border-t border-border px-4 py-3 text-xs text-amber-700 dark:text-amber-400">
+            {destinationOptions.walletHint}
+          </p>
+        ) : null}
 
         {error != null && (
           <div className="border-t border-border/60 px-4 py-2">

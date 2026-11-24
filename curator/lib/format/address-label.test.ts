@@ -3,7 +3,6 @@ import {
   getDepositorLabel,
   resolveDepositorLabel,
 } from '@/lib/format/address-label';
-import { getSafeByRole } from '@/lib/safe/config';
 
 const GROVE_USDC = '0xbeef0786756810478b88982DE00F3CD7fdB8e7c7';
 
@@ -12,15 +11,6 @@ describe('resolveDepositorLabel', () => {
     const resolved = resolveDepositorLabel(GROVE_USDC);
     expect(resolved?.kind).toBe('vault');
     expect(resolved?.label).toBe('Grove x Steakhouse USDC');
-  });
-
-  it('labels other known Safes', () => {
-    const owner = getSafeByRole('owner');
-    expect(resolveDepositorLabel(owner.address)).toEqual({
-      address: owner.address,
-      label: 'Owner Safe',
-      kind: 'safe',
-    });
   });
 
   it('returns null for ordinary wallets', () => {

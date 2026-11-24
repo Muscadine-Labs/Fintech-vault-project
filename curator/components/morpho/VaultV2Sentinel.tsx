@@ -1,7 +1,6 @@
 'use client';
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { useRouter } from 'next/navigation';
 import { useQueryClient } from '@tanstack/react-query';
 import { useAccount } from 'wagmi';
 import { Input } from '@/components/ui/input';
@@ -74,21 +73,7 @@ import {
 import { parseCapDecreaseInput } from '@/lib/morpho/cap-decrease-input';
 import type { TxPreview } from '@/lib/morpho/tx-preview';
 import type { Address, Hex } from 'viem';
-import { getAddress } from 'viem';
-import { queueSafeTransaction } from '@/lib/safe/queue-vault-write';
-import { getConnectorProvider } from '@/lib/wallet/connector-provider';
-import { useCuratorSafeApps } from '@/lib/safe/safe-apps-context';
-import type { SafeRole } from '@/lib/safe/config';
-import { SENTINEL_SAFE_ROLE } from '@/lib/safe/config';
-import {
-  defaultSentinelDestination,
-  eligibleSafeRolesForAddresses,
-  canConfirmVaultWriteDestination,
-  coerceVaultWriteDestination,
-  walletCanSignSentinel,
-  type VaultWriteDestination,
-} from '@/lib/safe/vault-write-destination';
-import { vaultWriteToCalldata } from '@/lib/safe/encode-vault-write';
+import { walletCanSignSentinel } from '@/lib/vault/write-destination';
 
 interface VaultV2SentinelProps {
   vaultAddress: string;
@@ -275,7 +260,7 @@ export function VaultV2Sentinel({
 
       <CuratorPanel
         title="Pending actions"
-        description="Pending timelock actions submitted by the curator. Revoke cancels before execution — sentinel or curator wallet/Safe (sentinel preferred)."
+        description="Pending timelock actions submitted by the curator. Revoke cancels before execution — sentinel or curator wallet (sentinel preferred)."
       >
         <div className="px-4 py-3">
           <VaultV2Pending
@@ -321,7 +306,7 @@ export function VaultV2Sentinel({
         <section className="space-y-3">
           <CuratorSectionHeader
             title="Emergency actions"
-            description="Close deposits, hard/safe market removal, sentinel lockdown, and allocator compromised flows on Morpho Curator."
+            description="Close deposits, market removal, sentinel lockdown, and allocator compromised flows on Morpho Curator."
           />
           <CuratorPanel>
             <div className="flex flex-col gap-3 px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
@@ -368,40 +353,17 @@ function DecreaseCapsPanel({
   const [previewOpen, setPreviewOpen] = useState(false);
   const [txPreview, setTxPreview] = useState<TxPreview | null>(null);
   const [rowErrors, setRowErrors] = useState<Record<string, string>>({});
-  const [queueingSafe, setQueueingSafe] = useState(false);
-  const [queueSafeError, setQueueSafeError] = useState<string | null>(null);
-  const [writeDestination, setWriteDestination] = useState<VaultWriteDestination>(() =>
-    defaultSentinelDestination(sentinels, undefined)
-  );
   const pendingConfirmRef = useRef<(() => Promise<void>) | null>(null);
-  const pendingCalldataRef = useRef<{ to: Address; data: Hex } | null>(null);
   const queryClient = useQueryClient();
-  const router = useRouter();
-  const { address: walletAddress, isConnected, connector } = useAccount();
-  const { connected: safeAppConnected, sdk: safeAppSdk, safeRole: safeAppRole } =
-    useCuratorSafeApps();
-  const sentinelSafeAppSdk = useMemo(
-    () =>
-      safeAppConnected &&
-      safeAppSdk &&
-      writeDestination.kind === 'safe' &&
-      safeAppRole === writeDestination.role
-        ? safeAppSdk
-        : null,
-    [safeAppConnected, safeAppSdk, safeAppRole, writeDestination]
-  );
+  const { address: walletAddress, isConnected } = useAccount();
 
   const walletCanUseSentinel = walletCanSignSentinel(walletAddress, sentinels);
   const walletReady = isConnected && walletCanUseSentinel;
   const sentinelWalletHint = !isConnected
     ? 'Connect your wallet in the top bar to sign directly with your EOA.'
     : !walletCanUseSentinel
-      ? 'Connected wallet is not an on-chain sentinel for this vault — switch to a sentinel EOA or queue to a Safe.'
+      ? 'Connected wallet is not an on-chain sentinel for this vault — switch to a sentinel wallet.'
       : undefined;
-  const eligibleSentinelSafes = useMemo(
-    () => eligibleSafeRolesForAddresses(sentinels),
-    [sentinels]
-  );
   const write = useVaultWrite({ chainId });
   const writeInFlight = write.isLoading && activeRowKey !== null;
 
@@ -414,7 +376,6 @@ function DecreaseCapsPanel({
     setPreviewOpen(false);
     setTxPreview(null);
     pendingConfirmRef.current = null;
-    pendingCalldataRef.current = null;
     setActiveRowKey(null);
   }, [write.isSuccess, queryClient, vaultAddress]);
 
@@ -536,36 +497,6 @@ function DecreaseCapsPanel({
       });
       if (!parsed.ok) return;
 
-      const writeConfig =
-        parsed.mode === 'absolute'
-          ? v2WriteConfigs.decreaseAbsoluteCap(
-              vaultAddress as Address,
-              idData,
-              parsed.value
-            )
-          : v2WriteConfigs.decreaseRelativeCap(
-              vaultAddress as Address,
-              idData,
-              parsed.value
-            );
-
-      try {
-        pendingCalldataRef.current = vaultWriteToCalldata({
-          address: writeConfig.address,
-          functionName: writeConfig.functionName,
-          args: writeConfig.args,
-        });
-      } catch (encodeError) {
-        setRowErrors((prev) => ({
-          ...prev,
-          [rowKey]:
-            encodeError instanceof Error
-              ? `Could not encode cap decrease: ${encodeError.message.split('\n')[0]}`
-              : 'Could not encode cap decrease.',
-        }));
-        return;
-      }
-
       setRowErrors((prev) => {
         if (!prev[rowKey]) return prev;
         const next = { ...prev };
@@ -574,18 +505,9 @@ function DecreaseCapsPanel({
       });
       pendingConfirmRef.current = () => submitRowDecrease(rowKey, mode, valueStr);
       setTxPreview(result.preview);
-      setWriteDestination(
-        coerceVaultWriteDestination(
-          defaultSentinelDestination(sentinels, walletAddress),
-          {
-            eligibleSafeRoles: eligibleSafeRolesForAddresses(sentinels),
-            preferredSafeRole: SENTINEL_SAFE_ROLE,
-          }
-        )
-      );
       setPreviewOpen(true);
     },
-    [adapterLabels, assetDecimals, assetSymbol, chainDecimals, grouped, risk, sentinels, submitRowDecrease, vaultAddress, walletAddress]
+    [adapterLabels, assetDecimals, assetSymbol, chainDecimals, grouped, risk, submitRowDecrease]
   );
 
   const confirmPreview = useCallback(async () => {
@@ -601,89 +523,18 @@ function DecreaseCapsPanel({
     }
   }, [activeRowKey]);
 
-  const handleQueueInSafe = useCallback(
-    async (safeRole: SafeRole, description: string, source: Parameters<typeof queueSafeTransaction>[0]['source']) => {
-      if (!txPreview || !pendingCalldataRef.current) return;
-
-      setQueueingSafe(true);
-      setQueueSafeError(null);
-
-      try {
-        await queueSafeTransaction({
-          safeRole,
-          calldata: pendingCalldataRef.current,
-          description,
-          preview: txPreview,
-          source,
-          proposer: walletAddress ? getAddress(walletAddress) : undefined,
-          provider: await getConnectorProvider(connector),
-          safeAppSdk: sentinelSafeAppSdk,
-        });
-        setPreviewOpen(false);
-        setTxPreview(null);
-        pendingConfirmRef.current = null;
-        pendingCalldataRef.current = null;
-        router.push(`/safe/${safeRole}/transactions`);
-      } catch (error) {
-        setQueueSafeError(
-          error instanceof Error ? error.message : 'Failed to queue Safe transaction.'
-        );
-      } finally {
-        setQueueingSafe(false);
-      }
-    },
-    [router, sentinelSafeAppSdk, txPreview, walletAddress, connector]
-  );
-
   const handlePreviewConfirm = useCallback(async () => {
-    if (
-      !canConfirmVaultWriteDestination(writeDestination, {
-        walletReady,
-        eligibleSafeRoles: eligibleSentinelSafes,
-      })
-    ) {
-      if (writeDestination.kind === 'wallet') {
+    if (!walletReady) {
+      if (activeRowKey) {
         setRowErrors((prev) => ({
           ...prev,
-          ...(activeRowKey
-            ? {
-                [activeRowKey]:
-                  sentinelWalletHint ??
-                  'Connect a sentinel wallet in the top bar, or queue to a role multisig.',
-              }
-            : {}),
+          [activeRowKey]: sentinelWalletHint ?? 'Connect a sentinel wallet in the top bar.',
         }));
-      } else {
-        setQueueSafeError('Selected Safe is not an on-chain sentinel for this vault.');
       }
-      return;
-    }
-
-    if (writeDestination.kind === 'safe') {
-      await handleQueueInSafe(
-        writeDestination.role,
-        `Sentinel cap decrease — ${assetSymbol ?? vaultAddress}`,
-        {
-          type: 'sentinel',
-          action: 'decrease_cap',
-          vaultAddress: getAddress(vaultAddress),
-          vaultSymbol: assetSymbol ?? undefined,
-        }
-      );
       return;
     }
     await confirmPreview();
-  }, [
-    writeDestination,
-    walletReady,
-    sentinelWalletHint,
-    eligibleSentinelSafes,
-    handleQueueInSafe,
-    assetSymbol,
-    vaultAddress,
-    confirmPreview,
-    activeRowKey,
-  ]);
+  }, [walletReady, sentinelWalletHint, confirmPreview, activeRowKey]);
 
   const clearRowInput = (rowKey: string) => {
     setSelections((prev) => {
@@ -907,38 +758,24 @@ function DecreaseCapsPanel({
         open={previewOpen}
         preview={txPreview}
         onOpenChange={(open) => {
-          if (!open && ((writeInFlight && isBroadcastTxHash(write.txHash)) || queueingSafe)) {
+          if (!open && writeInFlight && isBroadcastTxHash(write.txHash)) {
             return;
           }
           setPreviewOpen(open);
           if (!open) {
             setTxPreview(null);
             pendingConfirmRef.current = null;
-            pendingCalldataRef.current = null;
-            setQueueSafeError(null);
             if (!isBroadcastTxHash(write.txHash)) write.reset();
           }
         }}
         destinationOptions={{
-          destination: writeDestination,
-          onDestinationChange: setWriteDestination,
           walletReady,
           walletHint: sentinelWalletHint,
-          safeRoles: eligibleSentinelSafes,
-          confirmEnabled: canConfirmVaultWriteDestination(writeDestination, {
-            walletReady,
-            eligibleSafeRoles: eligibleSentinelSafes,
-          }),
+          confirmEnabled: walletReady,
         }}
         onConfirm={() => handlePreviewConfirm()}
-        isLoading={writeDestination.kind === 'safe' ? queueingSafe : writeInFlight}
-        error={
-          writeDestination.kind === 'safe'
-            ? queueSafeError
-              ? new Error(queueSafeError)
-              : null
-            : write.error
-        }
+        isLoading={writeInFlight}
+        error={write.error}
       />
     </div>
   );
@@ -968,40 +805,17 @@ function DeallocatePanel({
   const [previewOpen, setPreviewOpen] = useState(false);
   const [txPreview, setTxPreview] = useState<TxPreview | null>(null);
   const [rowErrors, setRowErrors] = useState<Record<string, string>>({});
-  const [queueingSafe, setQueueingSafe] = useState(false);
-  const [queueSafeError, setQueueSafeError] = useState<string | null>(null);
-  const [writeDestination, setWriteDestination] = useState<VaultWriteDestination>(() =>
-    defaultSentinelDestination(sentinels, undefined)
-  );
   const pendingConfirmRef = useRef<(() => Promise<void>) | null>(null);
-  const pendingCalldataRef = useRef<{ to: Address; data: Hex } | null>(null);
   const queryClient = useQueryClient();
-  const router = useRouter();
-  const { address: walletAddress, isConnected, connector } = useAccount();
-  const { connected: safeAppConnected, sdk: safeAppSdk, safeRole: safeAppRole } =
-    useCuratorSafeApps();
-  const sentinelSafeAppSdk = useMemo(
-    () =>
-      safeAppConnected &&
-      safeAppSdk &&
-      writeDestination.kind === 'safe' &&
-      safeAppRole === writeDestination.role
-        ? safeAppSdk
-        : null,
-    [safeAppConnected, safeAppSdk, safeAppRole, writeDestination]
-  );
+  const { address: walletAddress, isConnected } = useAccount();
 
   const walletCanUseSentinel = walletCanSignSentinel(walletAddress, sentinels);
   const walletReady = isConnected && walletCanUseSentinel;
   const sentinelWalletHint = !isConnected
     ? 'Connect your wallet in the top bar to sign directly with your EOA.'
     : !walletCanUseSentinel
-      ? 'Connected wallet is not an on-chain sentinel for this vault — switch to a sentinel EOA or queue to a Safe.'
+      ? 'Connected wallet is not an on-chain sentinel for this vault — switch to a sentinel wallet.'
       : undefined;
-  const eligibleSentinelSafes = useMemo(
-    () => eligibleSafeRolesForAddresses(sentinels),
-    [sentinels]
-  );
   const write = useVaultWrite({ chainId });
   const writeInFlight = write.isLoading && activeRowKey !== null;
 
@@ -1014,7 +828,6 @@ function DeallocatePanel({
     setPreviewOpen(false);
     setTxPreview(null);
     pendingConfirmRef.current = null;
-    pendingCalldataRef.current = null;
     setActiveRowKey(null);
   }, [write.isSuccess, queryClient, vaultAddress]);
 
@@ -1128,32 +941,11 @@ function DeallocatePanel({
         return next;
       });
 
-      const writeConfig = v2WriteConfigs.deallocate(
-        vaultAddress as Address,
-        row.adapterAddress as Address,
-        row.idData,
-        parsed
-      );
-      pendingCalldataRef.current = vaultWriteToCalldata({
-        address: writeConfig.address,
-        functionName: writeConfig.functionName,
-        args: writeConfig.args,
-      });
-
       pendingConfirmRef.current = () => deallocateRow(row, parsed);
       setTxPreview(result.preview);
-      setWriteDestination(
-        coerceVaultWriteDestination(
-          defaultSentinelDestination(sentinels, walletAddress),
-          {
-            eligibleSafeRoles: eligibleSafeRolesForAddresses(sentinels),
-            preferredSafeRole: SENTINEL_SAFE_ROLE,
-          }
-        )
-      );
       setPreviewOpen(true);
     },
-    [amounts, assetDecimals, assetSymbol, chainDecimals, deallocateRow, sentinels, vaultAddress, walletAddress]
+    [amounts, assetDecimals, assetSymbol, chainDecimals, deallocateRow]
   );
 
   const confirmPreview = useCallback(async () => {
@@ -1169,89 +961,18 @@ function DeallocatePanel({
     }
   }, [activeRowKey]);
 
-  const handleQueueInSafe = useCallback(
-    async (safeRole: SafeRole, description: string, source: Parameters<typeof queueSafeTransaction>[0]['source']) => {
-      if (!txPreview || !pendingCalldataRef.current) return;
-
-      setQueueingSafe(true);
-      setQueueSafeError(null);
-
-      try {
-        await queueSafeTransaction({
-          safeRole,
-          calldata: pendingCalldataRef.current,
-          description,
-          preview: txPreview,
-          source,
-          proposer: walletAddress ? getAddress(walletAddress) : undefined,
-          provider: await getConnectorProvider(connector),
-          safeAppSdk: sentinelSafeAppSdk,
-        });
-        setPreviewOpen(false);
-        setTxPreview(null);
-        pendingConfirmRef.current = null;
-        pendingCalldataRef.current = null;
-        router.push(`/safe/${safeRole}/transactions`);
-      } catch (error) {
-        setQueueSafeError(
-          error instanceof Error ? error.message : 'Failed to queue Safe transaction.'
-        );
-      } finally {
-        setQueueingSafe(false);
-      }
-    },
-    [router, sentinelSafeAppSdk, txPreview, walletAddress, connector]
-  );
-
   const handlePreviewConfirm = useCallback(async () => {
-    if (
-      !canConfirmVaultWriteDestination(writeDestination, {
-        walletReady,
-        eligibleSafeRoles: eligibleSentinelSafes,
-      })
-    ) {
-      if (writeDestination.kind === 'wallet') {
+    if (!walletReady) {
+      if (activeRowKey) {
         setRowErrors((prev) => ({
           ...prev,
-          ...(activeRowKey
-            ? {
-                [activeRowKey]:
-                  sentinelWalletHint ??
-                  'Connect a sentinel wallet in the top bar, or queue to a role multisig.',
-              }
-            : {}),
+          [activeRowKey]: sentinelWalletHint ?? 'Connect a sentinel wallet in the top bar.',
         }));
-      } else {
-        setQueueSafeError('Selected Safe is not an on-chain sentinel for this vault.');
       }
-      return;
-    }
-
-    if (writeDestination.kind === 'safe') {
-      await handleQueueInSafe(
-        writeDestination.role,
-        `Sentinel deallocate — ${assetSymbol ?? vaultAddress}`,
-        {
-          type: 'sentinel',
-          action: 'deallocate',
-          vaultAddress: getAddress(vaultAddress),
-          vaultSymbol: assetSymbol ?? undefined,
-        }
-      );
       return;
     }
     await confirmPreview();
-  }, [
-    writeDestination,
-    walletReady,
-    sentinelWalletHint,
-    eligibleSentinelSafes,
-    handleQueueInSafe,
-    assetSymbol,
-    vaultAddress,
-    confirmPreview,
-    activeRowKey,
-  ]);
+  }, [walletReady, sentinelWalletHint, confirmPreview, activeRowKey]);
 
   return (
     <div className="space-y-3">
@@ -1382,38 +1103,24 @@ function DeallocatePanel({
         open={previewOpen}
         preview={txPreview}
         onOpenChange={(open) => {
-          if (!open && ((writeInFlight && isBroadcastTxHash(write.txHash)) || queueingSafe)) {
+          if (!open && writeInFlight && isBroadcastTxHash(write.txHash)) {
             return;
           }
           setPreviewOpen(open);
           if (!open) {
             setTxPreview(null);
             pendingConfirmRef.current = null;
-            pendingCalldataRef.current = null;
-            setQueueSafeError(null);
             if (!isBroadcastTxHash(write.txHash)) write.reset();
           }
         }}
         destinationOptions={{
-          destination: writeDestination,
-          onDestinationChange: setWriteDestination,
           walletReady,
           walletHint: sentinelWalletHint,
-          safeRoles: eligibleSentinelSafes,
-          confirmEnabled: canConfirmVaultWriteDestination(writeDestination, {
-            walletReady,
-            eligibleSafeRoles: eligibleSentinelSafes,
-          }),
+          confirmEnabled: walletReady,
         }}
         onConfirm={() => handlePreviewConfirm()}
-        isLoading={writeDestination.kind === 'safe' ? queueingSafe : writeInFlight}
-        error={
-          writeDestination.kind === 'safe'
-            ? queueSafeError
-              ? new Error(queueSafeError)
-              : null
-            : write.error
-        }
+        isLoading={writeInFlight}
+        error={write.error}
       />
     </div>
   );

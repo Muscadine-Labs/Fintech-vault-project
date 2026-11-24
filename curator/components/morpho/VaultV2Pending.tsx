@@ -1,10 +1,9 @@
 'use client';
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { useRouter } from 'next/navigation';
 import { useAccount } from 'wagmi';
 import { useQueryClient } from '@tanstack/react-query';
-import { getAddress, type Address, type Hex } from 'viem';
+import type { Address, Hex } from 'viem';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Badge } from '@/components/ui/badge';
 import {
@@ -28,31 +27,16 @@ import { formatExecutableAt } from '@/lib/format/pending-time';
 import { formatVaultV2FunctionTitle } from '@/lib/morpho/vault-v2-timelocks';
 import {
   buildPendingAcceptPreview,
-  buildPendingAcceptCalldata,
   buildPendingAcceptWriteConfig,
-  buildPendingRevokeCalldata,
   buildPendingRevokePreview,
   formatPendingCapSummary,
 } from '@/lib/morpho/pending-accept';
 import {
-  canConfirmPendingAcceptDestination,
-  canConfirmPendingRevokeDestination,
-  coerceVaultWriteDestination,
-  defaultPendingAcceptDestination,
-  defaultPendingRevokeDestination,
-  eligibleRevokeSafeRoles,
   PENDING_ACCEPT_WALLET_HINT,
   PENDING_REVOKE_WALLET_HINT,
-  VAULT_WRITE_QUEUE_SAFE_ROLES,
   walletCanRevokePending,
-  type VaultWriteDestination,
-} from '@/lib/safe/vault-write-destination';
-import { queueSafeTransaction } from '@/lib/safe/queue-vault-write';
-import { getConnectorProvider } from '@/lib/wallet/connector-provider';
-import { useCuratorSafeApps } from '@/lib/safe/safe-apps-context';
+} from '@/lib/vault/write-destination';
 import { vaultV2GovernanceQueryKey } from '@/lib/hooks/useVaultV2Governance';
-import type { SafeRole } from '@/lib/safe/config';
-import { SENTINEL_SAFE_ROLE } from '@/lib/safe/config';
 import type { TxPreview } from '@/lib/morpho/tx-preview';
 
 interface VaultV2PendingProps {
@@ -100,31 +84,16 @@ export function VaultV2Pending({
   const revokeWrite = useVaultWrite({ chainId });
   const acceptWrite = useVaultWrite({ chainId });
   const queryClient = useQueryClient();
-  const router = useRouter();
-  const { isConnected, address: walletAddress, connector } = useAccount();
-  const { connected: safeAppConnected, sdk: safeAppSdk, safeRole: safeAppRole } =
-    useCuratorSafeApps();
+  const { isConnected, address: walletAddress } = useAccount();
 
   const [acceptPreviewOpen, setAcceptPreviewOpen] = useState(false);
   const [acceptPreview, setAcceptPreview] = useState<TxPreview | null>(null);
   const [acceptItem, setAcceptItem] = useState<VaultV2PendingItem | null>(null);
-  const [writeDestination, setWriteDestination] = useState<VaultWriteDestination>(() =>
-    defaultPendingAcceptDestination(isConnected)
-  );
-  const [queueingSafe, setQueueingSafe] = useState(false);
   const [acceptError, setAcceptError] = useState<string | null>(null);
 
   const [revokePreviewOpen, setRevokePreviewOpen] = useState(false);
   const [revokePreview, setRevokePreview] = useState<TxPreview | null>(null);
   const [revokeItem, setRevokeItem] = useState<VaultV2PendingItem | null>(null);
-  const [revokeDestination, setRevokeDestination] = useState<VaultWriteDestination>(() =>
-    defaultPendingRevokeDestination(
-      preloadedGovernance?.curator,
-      preloadedGovernance?.sentinels,
-      undefined
-    )
-  );
-  const [queueingRevokeSafe, setQueueingRevokeSafe] = useState(false);
   const [revokeError, setRevokeError] = useState<string | null>(null);
 
   const onChainCurator = preloadedGovernance?.curator ?? null;
@@ -132,24 +101,8 @@ export function VaultV2Pending({
     () => preloadedGovernance?.sentinels ?? [],
     [preloadedGovernance?.sentinels]
   );
-  const revokeEligibleSafes = useMemo(
-    () => eligibleRevokeSafeRoles(onChainCurator, onChainSentinels),
-    [onChainCurator, onChainSentinels]
-  );
   const revokeWalletReady =
     isConnected && walletCanRevokePending(walletAddress, onChainCurator, onChainSentinels);
-
-  const setRevokeDestinationCoerced = useCallback(
-    (destination: VaultWriteDestination) => {
-      setRevokeDestination(
-        coerceVaultWriteDestination(destination, {
-          eligibleSafeRoles: revokeEligibleSafes,
-          preferredSafeRole: SENTINEL_SAFE_ROLE,
-        })
-      );
-    },
-    [revokeEligibleSafes]
-  );
 
   // Status is re-derived from validAt on the client so an item whose timelock
   // elapses while the page is open flips to Executable without a refetch.
@@ -180,20 +133,8 @@ export function VaultV2Pending({
     return () => window.clearInterval(id);
   }, [hasWaiting]);
 
-  const revokeInFlight =
-    (revokeWrite.isLoading || queueingRevokeSafe) && activeRowId !== null;
-  const acceptBusy =
-    (acceptWrite.isLoading || queueingSafe) && activeRowId !== null;
-
-  const safeAppSdkForRole = useMemo(() => {
-    if (!safeAppConnected || !safeAppSdk || writeDestination.kind !== 'safe') return null;
-    return safeAppRole === writeDestination.role ? safeAppSdk : null;
-  }, [safeAppConnected, safeAppSdk, safeAppRole, writeDestination]);
-
-  const safeAppSdkForRevokeRole = useMemo(() => {
-    if (!safeAppConnected || !safeAppSdk || revokeDestination.kind !== 'safe') return null;
-    return safeAppRole === revokeDestination.role ? safeAppSdk : null;
-  }, [safeAppConnected, safeAppSdk, safeAppRole, revokeDestination]);
+  const revokeInFlight = revokeWrite.isLoading && activeRowId !== null;
+  const acceptBusy = acceptWrite.isLoading && activeRowId !== null;
 
   useEffect(() => {
     if (!revokeWrite.isSuccess || activeRowId === null) return;
@@ -227,9 +168,6 @@ export function VaultV2Pending({
     (item: VaultV2PendingItem) => {
       setRevokeError(null);
       setRevokeItem(item);
-      setRevokeDestinationCoerced(
-        defaultPendingRevokeDestination(onChainCurator, onChainSentinels, walletAddress)
-      );
       setRevokePreview(
         buildPendingRevokePreview({
           item,
@@ -246,14 +184,10 @@ export function VaultV2Pending({
     [
       assetDecimals,
       assetSymbol,
-      onChainCurator,
-      onChainSentinels,
       preloadedGovernance,
       preloadedRisk,
       vaultAddress,
       vaultSymbol,
-      walletAddress,
-      setRevokeDestinationCoerced,
     ]
   );
 
@@ -273,59 +207,10 @@ export function VaultV2Pending({
     }
   }, [revokeItem, revokeWrite, vaultAddress]);
 
-  const queueRevokeInSafe = useCallback(
-    async (safeRole: SafeRole) => {
-      if (!revokeItem || !revokePreview) return;
-
-      setQueueingRevokeSafe(true);
-      setRevokeError(null);
-
-      try {
-        const calldata = buildPendingRevokeCalldata(getAddress(vaultAddress), revokeItem);
-        await queueSafeTransaction({
-          safeRole,
-          calldata,
-          description: `Revoke ${formatVaultV2FunctionTitle(revokeItem.functionName)} — ${vaultSymbol ?? vaultAddress}`,
-          preview: revokePreview,
-          source: {
-            type: 'sentinel',
-            action: 'revoke_pending',
-            vaultAddress: getAddress(vaultAddress),
-            vaultSymbol: vaultSymbol ?? undefined,
-          },
-          proposer: walletAddress ? getAddress(walletAddress) : undefined,
-          provider: await getConnectorProvider(connector),
-          safeAppSdk: safeAppSdkForRevokeRole,
-        });
-        setRevokePreviewOpen(false);
-        setRevokePreview(null);
-        setRevokeItem(null);
-        setActiveRowId(null);
-        router.push(`/safe/${safeRole}/transactions`);
-      } catch (e) {
-        setRevokeError(e instanceof Error ? e.message : 'Failed to queue Safe transaction.');
-        setActiveRowId(null);
-      } finally {
-        setQueueingRevokeSafe(false);
-      }
-    },
-    [revokeItem, revokePreview, router, safeAppSdkForRevokeRole, vaultAddress, vaultSymbol, walletAddress, connector]
-  );
-
   const handleRevokeConfirm = useCallback(async () => {
     if (!revokeItem) return;
 
     setActiveRowId(revokeItem.rowId);
-
-    if (revokeDestination.kind === 'safe') {
-      if (!revokeEligibleSafes.includes(revokeDestination.role)) {
-        setRevokeError('Selected Safe is not the on-chain sentinel or curator for this vault.');
-        setActiveRowId(null);
-        return;
-      }
-      await queueRevokeInSafe(revokeDestination.role);
-      return;
-    }
 
     if (!isConnected) {
       setRevokeError('Connect your wallet using the button in the top bar.');
@@ -342,9 +227,6 @@ export function VaultV2Pending({
     await runWalletRevoke();
   }, [
     revokeItem,
-    revokeDestination,
-    revokeEligibleSafes,
-    queueRevokeInSafe,
     runWalletRevoke,
     isConnected,
     walletAddress,
@@ -356,7 +238,6 @@ export function VaultV2Pending({
     (item: VaultV2PendingItem) => {
       setAcceptError(null);
       setAcceptItem(item);
-      setWriteDestination(defaultPendingAcceptDestination(isConnected));
       setAcceptPreview(
         buildPendingAcceptPreview({
           item,
@@ -370,7 +251,7 @@ export function VaultV2Pending({
       );
       setAcceptPreviewOpen(true);
     },
-    [assetDecimals, assetSymbol, preloadedGovernance, preloadedRisk, vaultAddress, vaultSymbol, isConnected]
+    [assetDecimals, assetSymbol, preloadedGovernance, preloadedRisk, vaultAddress, vaultSymbol]
   );
 
   const runWalletAccept = useCallback(async () => {
@@ -388,59 +269,10 @@ export function VaultV2Pending({
     }
   }, [acceptItem, acceptWrite, vaultAddress]);
 
-  const queueAcceptInSafe = useCallback(
-    async (safeRole: SafeRole) => {
-      if (!acceptItem || !acceptPreview) return;
-
-      setQueueingSafe(true);
-      setAcceptError(null);
-
-      try {
-        const calldata = buildPendingAcceptCalldata(getAddress(vaultAddress), acceptItem);
-        await queueSafeTransaction({
-          safeRole,
-          calldata,
-          description: `Accept ${formatVaultV2FunctionTitle(acceptItem.functionName)} — ${vaultSymbol ?? vaultAddress}`,
-          preview: acceptPreview,
-          source: {
-            type: 'caps',
-            action: 'accept_pending',
-            vaultAddress: getAddress(vaultAddress),
-            vaultSymbol: vaultSymbol ?? undefined,
-          },
-          proposer: walletAddress ? getAddress(walletAddress) : undefined,
-          provider: await getConnectorProvider(connector),
-          safeAppSdk: safeAppSdkForRole,
-        });
-        setAcceptPreviewOpen(false);
-        setAcceptPreview(null);
-        setAcceptItem(null);
-        setActiveRowId(null);
-        router.push(`/safe/${safeRole}/transactions`);
-      } catch (e) {
-        setAcceptError(e instanceof Error ? e.message : 'Failed to queue Safe transaction.');
-        setActiveRowId(null);
-      } finally {
-        setQueueingSafe(false);
-      }
-    },
-    [acceptItem, acceptPreview, router, safeAppSdkForRole, vaultAddress, vaultSymbol, walletAddress, connector]
-  );
-
   const handleAcceptConfirm = useCallback(async () => {
     if (!acceptItem) return;
 
     setActiveRowId(acceptItem.rowId);
-
-    if (writeDestination.kind === 'safe') {
-      if (!VAULT_WRITE_QUEUE_SAFE_ROLES.includes(writeDestination.role)) {
-        setAcceptError('Selected Safe is not available for queuing.');
-        setActiveRowId(null);
-        return;
-      }
-      await queueAcceptInSafe(writeDestination.role);
-      return;
-    }
 
     if (!isConnected) {
       setAcceptError('Connect your wallet using the button in the top bar.');
@@ -449,7 +281,7 @@ export function VaultV2Pending({
     }
 
     await runWalletAccept();
-  }, [acceptItem, writeDestination, queueAcceptInSafe, runWalletAccept, isConnected]);
+  }, [acceptItem, runWalletAccept, isConnected]);
 
   const rowSummary = useCallback(
     (item: VaultV2PendingItem) =>
@@ -517,7 +349,7 @@ export function VaultV2Pending({
           {filtered.map((item) => {
             const rowId = item.rowId;
             const isActiveRevoke =
-              activeRowId === rowId && (revokeWrite.isLoading || queueingRevokeSafe);
+              activeRowId === rowId && revokeWrite.isLoading;
             const isActiveAccept = activeRowId === rowId && acceptBusy;
             const isOtherRowBusy =
               (revokeInFlight || acceptBusy) && activeRowId !== rowId;
@@ -604,11 +436,7 @@ export function VaultV2Pending({
         open={acceptPreviewOpen}
         preview={acceptPreview}
         onOpenChange={(open) => {
-          if (
-            !open &&
-            (queueingSafe ||
-              (acceptWrite.isLoading && isBroadcastTxHash(acceptWrite.txHash)))
-          ) {
+          if (!open && acceptWrite.isLoading && isBroadcastTxHash(acceptWrite.txHash)) {
             return;
           }
           setAcceptPreviewOpen(open);
@@ -621,22 +449,13 @@ export function VaultV2Pending({
           }
         }}
         destinationOptions={{
-          destination: writeDestination,
-          onDestinationChange: setWriteDestination,
           walletReady: isConnected,
           walletHint: PENDING_ACCEPT_WALLET_HINT,
-          safeRoles: VAULT_WRITE_QUEUE_SAFE_ROLES,
-          confirmEnabled: canConfirmPendingAcceptDestination(writeDestination, isConnected),
+          confirmEnabled: isConnected,
         }}
         onConfirm={() => handleAcceptConfirm()}
-        isLoading={writeDestination.kind === 'safe' ? queueingSafe : acceptWrite.isLoading}
-        error={
-          acceptError
-            ? new Error(acceptError)
-            : acceptWrite.error && writeDestination.kind === 'wallet'
-              ? acceptWrite.error
-              : null
-        }
+        isLoading={acceptWrite.isLoading}
+        error={acceptError ? new Error(acceptError) : acceptWrite.error}
       />
       ) : null}
 
@@ -645,11 +464,7 @@ export function VaultV2Pending({
         open={revokePreviewOpen}
         preview={revokePreview}
         onOpenChange={(open) => {
-          if (
-            !open &&
-            (queueingRevokeSafe ||
-              (revokeWrite.isLoading && isBroadcastTxHash(revokeWrite.txHash)))
-          ) {
+          if (!open && revokeWrite.isLoading && isBroadcastTxHash(revokeWrite.txHash)) {
             return;
           }
           setRevokePreviewOpen(open);
@@ -662,27 +477,13 @@ export function VaultV2Pending({
           }
         }}
         destinationOptions={{
-          destination: revokeDestination,
-          onDestinationChange: setRevokeDestinationCoerced,
           walletReady: revokeWalletReady,
           walletHint: PENDING_REVOKE_WALLET_HINT,
-          safeRoles: revokeEligibleSafes,
-          confirmEnabled: canConfirmPendingRevokeDestination(revokeDestination, {
-            curator: onChainCurator,
-            sentinels: onChainSentinels,
-            wallet: walletAddress,
-            isConnected,
-          }),
+          confirmEnabled: revokeWalletReady,
         }}
         onConfirm={() => handleRevokeConfirm()}
-        isLoading={revokeDestination.kind === 'safe' ? queueingRevokeSafe : revokeWrite.isLoading}
-        error={
-          revokeError
-            ? new Error(revokeError)
-            : revokeWrite.error && revokeDestination.kind === 'wallet'
-              ? revokeWrite.error
-              : null
-        }
+        isLoading={revokeWrite.isLoading}
+        error={revokeError ? new Error(revokeError) : revokeWrite.error}
       />
       ) : null}
     </>
@@ -716,9 +517,9 @@ export function VaultV2Pending({
       title={`Pending actions (${pending.length})`}
       description={
         allowAccept
-          ? 'Executable timelock actions (cap increases, liquidity adapter, roles, fees, …). After the waiting period, anyone may accept — any connected wallet or multisig Safe.'
+          ? 'Executable timelock actions (cap increases, liquidity adapter, roles, fees, …). After the waiting period, any connected wallet may accept.'
           : allowRevoke
-            ? 'Pending timelock actions. Sentinel or curator may revoke before execution (sentinel wallet/Safe preferred).'
+            ? 'Pending timelock actions. The sentinel or curator wallet may revoke before execution (sentinel preferred).'
             : 'Pending timelock actions queued on this vault.'
       }
     >

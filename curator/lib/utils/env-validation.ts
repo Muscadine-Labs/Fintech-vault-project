@@ -35,12 +35,6 @@ function validateEnvVars(): EnvValidationResult {
     warnings.push('NEXT_PUBLIC_ALCHEMY_API_KEY is not set. Client wallet RPC uses public chain endpoints');
   }
 
-  if (!process.env.NEXT_PUBLIC_SAFE_API_KEY?.trim()) {
-    warnings.push(
-      'NEXT_PUBLIC_SAFE_API_KEY is not set. Safe transaction history cannot list executed Safe calls'
-    );
-  }
-
   return {
     isValid: errors.length === 0,
     errors,

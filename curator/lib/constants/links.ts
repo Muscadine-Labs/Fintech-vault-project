@@ -1,9 +1,3 @@
-/** Safe Developer Dashboard — API keys, Transaction Service, app registration. */
-export const SAFE_DEVELOPER_DASHBOARD_URL = 'https://developer.safe.global';
-
-/** Safe{Wallet}. */
-export const SAFE_APP_URL = 'https://app.safe.global';
-
 export const MORPHO_CURATOR_V2_VAULTS_URL = 'https://curator.morpho.org/vaults';
 export const MORPHO_CURATOR_CREATE_MARKET_URL = 'https://curator.morpho.org/markets/create';
 export const MORPHO_CURATOR_CREATE_VAULT_URL = 'https://curator.morpho.org/vaults/create';

@@ -178,19 +178,6 @@ export function VaultActivityFeed({
         </div>
       ) : (
         <div className="space-y-2 p-4">
-          {data?.governanceHistory === 'complete' && data.governanceHistorySince != null && (
-            <p className="text-xs text-muted-foreground">
-              Governance history covers the role Safes&apos; latest transactions — calls before{' '}
-              {new Date(data.governanceHistorySince * 1000).toLocaleDateString()} may be missing.
-            </p>
-          )}
-          {data?.governanceHistory !== 'complete' && (
-            <p className="text-xs text-amber-700 dark:text-amber-300">
-              {data?.governanceHistory === 'unavailable'
-                ? 'Executed governance calls need NEXT_PUBLIC_SAFE_API_KEY (they come from the role Safes’ history). Showing allocations and pending submissions only.'
-                : 'Some role Safe histories failed to load; governance rows may be incomplete.'}
-            </p>
-          )}
           {rows.length === 0 ? (
             <CuratorEmptyText>No activity for this filter.</CuratorEmptyText>
           ) : (

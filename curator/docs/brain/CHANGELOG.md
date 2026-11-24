@@ -2,6 +2,13 @@
 
 Notes from before this student template are not included.
 
+## 2026-11-24 — Multisig Safe removed
+
+- Vault writes sign from the connected wallet only. The Safe workspace, Safe API routes, Transaction Service client, and `@safe-global` packages are gone.
+- `/safe` and `/curator/safe` redirect to `/curator`.
+- Activity shows Morpho allocations and pending governance submits. It no longer reads executed governance from Safe history.
+- Role checks for confirm live in `lib/vault/write-destination.ts`.
+
 ## 2026-11-15 — Second review pass
 
 - `batchVaultV2ByAddress` single-vault retries map only GraphQL errors to null; a timeout / 429 / network error fails the read, so a list with a real vault missing is never cached.

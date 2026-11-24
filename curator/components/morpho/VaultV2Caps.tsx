@@ -106,7 +106,7 @@ export function VaultV2Caps({
               ? 'Cap the total allocation each market can hold after a Public Allocator move, and choose which markets it can deallocate from.'
               : 'Supply and borrow limits for adapters, collateral tokens, and Morpho markets. Vault caps still bind Public Allocator moves.'}
             {pendingCount > 0
-              ? ' Accept executable timelock actions below — any connected wallet or multisig Safe may submit after the waiting period.'
+              ? ' Accept executable timelock actions below — any connected wallet may submit after the waiting period.'
               : ''}
           </>
         }

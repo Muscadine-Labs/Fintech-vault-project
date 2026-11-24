@@ -4,25 +4,16 @@ import {
   getConfiguredVaultDisplayName,
   getVaultByAddress,
 } from '@/lib/config/vaults';
-import { getSafeByAddress } from '@/lib/safe/config';
 
-export type RoleAddressKind = 'public_allocator' | 'safe' | 'eoa';
+export type RoleAddressKind = 'public_allocator' | 'eoa';
 
 export type RoleAddressInfo = {
   address: string;
   label: string;
   kind: RoleAddressKind;
-  /** Safe role when kind === 'safe'. */
-  safeRole?: string;
 };
 
-export type BotActorKind =
-  | 'allocator_safe'
-  | 'sentinel_safe'
-  | 'owner_safe'
-  | 'curator_safe'
-  | 'public_allocator'
-  | 'other';
+export type BotActorKind = 'public_allocator' | 'other';
 
 export type BotActorInfo = {
   address: Address;
@@ -30,7 +21,7 @@ export type BotActorInfo = {
   kind: BotActorKind;
 };
 
-export type DepositorKind = 'vault' | 'safe';
+export type DepositorKind = 'vault';
 
 export type DepositorLabel = {
   address: string;
@@ -39,10 +30,8 @@ export type DepositorLabel = {
 };
 
 /**
- * Label vault role holders:
- * Public Allocator → configured Safes → EOA (unknown address).
- * Unknown addresses are labeled EOA for Roles UI (configured role holders that
- * are not a known Safe or the Public Allocator are wallet keys in practice).
+ * Label vault role holders: Public Allocator, otherwise EOA.
+ * Unknown addresses are labeled EOA for the Roles UI.
  */
 export function resolveRoleAddress(address: string): RoleAddressInfo {
   if (isVaultV2PublicAllocatorAddress(address)) {
@@ -50,16 +39,6 @@ export function resolveRoleAddress(address: string): RoleAddressInfo {
       address,
       label: 'Public Allocator',
       kind: 'public_allocator',
-    };
-  }
-
-  const safe = getSafeByAddress(address);
-  if (safe) {
-    return {
-      address: safe.address,
-      label: `${safe.label} Safe`,
-      kind: 'safe',
-      safeRole: safe.role,
     };
   }
 
@@ -77,7 +56,7 @@ export function getRoleAddressLabel(address: string): string {
 
 /**
  * Label known protocol addresses in depositor / holder / tx-user lists.
- * Vaults, then Safes. Returns null for ordinary wallets.
+ * Returns null for ordinary wallets.
  */
 export function resolveDepositorLabel(address: string): DepositorLabel | null {
   const vault = getVaultByAddress(address);
@@ -86,15 +65,6 @@ export function resolveDepositorLabel(address: string): DepositorLabel | null {
       address: vault.address,
       label: getConfiguredVaultDisplayName(vault),
       kind: 'vault',
-    };
-  }
-
-  const safe = getSafeByAddress(address);
-  if (safe) {
-    return {
-      address: safe.address,
-      label: `${safe.label} Safe`,
-      kind: 'safe',
     };
   }
 
@@ -119,25 +89,6 @@ export function labelForActor(address: string): BotActorInfo {
       address: address as Address,
       label: resolved.label,
       kind: 'public_allocator',
-    };
-  }
-
-  if (resolved.kind === 'safe') {
-    const role = resolved.safeRole;
-    const kind: BotActorKind =
-      role === 'allocator'
-        ? 'allocator_safe'
-        : role === 'sentinel'
-          ? 'sentinel_safe'
-          : role === 'owner'
-            ? 'owner_safe'
-            : role === 'curator'
-              ? 'curator_safe'
-              : 'other';
-    return {
-      address: resolved.address as Address,
-      label: resolved.label,
-      kind,
     };
   }
 

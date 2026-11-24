@@ -1,7 +1,6 @@
 'use client';
 
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { useRouter } from 'next/navigation';
 import { useQueryClient } from '@tanstack/react-query';
 import { useAccount } from 'wagmi';
 import { getAddress } from 'viem';
@@ -52,22 +51,8 @@ import {
 } from '@/lib/morpho/v2-id-data';
 import { formatForceDeallocatePenaltyWad } from '@/lib/morpho/vault-v2-api';
 import type { TxPreview } from '@/lib/morpho/tx-preview';
-import {
-  encodePublicAllocatorUpdate,
-  publicAllocatorWriteConfig,
-} from '@/lib/onchain/public-allocator-calldata';
-import { ALLOCATION_SAFE_ROLE } from '@/lib/safe/config';
-import { queueSafeTransaction } from '@/lib/safe/queue-vault-write';
-import { useCuratorSafeApps } from '@/lib/safe/safe-apps-context';
-import {
-  canConfirmVaultWriteDestination,
-  coerceVaultWriteDestination,
-  defaultAllocationDestination,
-  eligibleSafeRolesForAddresses,
-  walletCanSignAllocation,
-  type VaultWriteDestination,
-} from '@/lib/safe/vault-write-destination';
-import { getConnectorProvider } from '@/lib/wallet/connector-provider';
+import { publicAllocatorWriteConfig } from '@/lib/onchain/public-allocator-calldata';
+import { walletCanSignAllocation } from '@/lib/vault/write-destination';
 import { getScanUrlForChain } from '@/lib/constants';
 import { isBroadcastTxHash, isWalletRejection } from '@/lib/utils/wallet-error';
 
@@ -132,11 +117,8 @@ export function PublicAllocatorCaps({
   assetSymbol?: string | null;
   assetDecimals?: number | null;
 }) {
-  const router = useRouter();
   const queryClient = useQueryClient();
-  const { address: walletAddress, isConnected, connector } = useAccount();
-  const { connected: safeAppConnected, sdk: safeAppSdk, safeRole: safeAppRole } =
-    useCuratorSafeApps();
+  const { address: walletAddress, isConnected } = useAccount();
   const write = useVaultWrite({ chainId });
   const settledWrite = useRef(false);
 
@@ -171,45 +153,13 @@ export function PublicAllocatorCaps({
   const [previewOpen, setPreviewOpen] = useState(false);
   const [preview, setPreview] = useState<TxPreview | null>(null);
   const [pendingChanges, setPendingChanges] = useState<PublicAllocatorChange[]>([]);
-  const [queueing, setQueueing] = useState(false);
-  const [destination, setDestination] = useState<VaultWriteDestination>(() =>
-    defaultAllocationDestination(allocators, undefined)
-  );
-
-  const eligibleSafes = useMemo(
-    () => eligibleSafeRolesForAddresses(allocators),
-    [allocators]
-  );
   const walletCanAllocate = walletCanSignAllocation(walletAddress, allocators);
   const walletReady = isConnected && walletCanAllocate;
-  const resolvedDestination = useMemo(
-    () =>
-      coerceVaultWriteDestination(destination, {
-        eligibleSafeRoles: eligibleSafes,
-        preferredSafeRole: ALLOCATION_SAFE_ROLE,
-      }),
-    [destination, eligibleSafes]
-  );
-  const canConfirm = canConfirmVaultWriteDestination(resolvedDestination, {
-    walletReady,
-    eligibleSafeRoles: eligibleSafes,
-  });
   const walletHint = !isConnected
-    ? 'Connect an allocator wallet in the top bar, or queue this to the Allocator Safe.'
+    ? 'Connect an allocator wallet in the top bar.'
     : !walletCanAllocate
-      ? 'This wallet is not an allocator of the vault. Queue the change to the Allocator Safe.'
+      ? 'This wallet is not an allocator of the vault.'
       : 'You are an allocator of this vault. These caps apply immediately.';
-
-  const safeApp = useMemo(
-    () =>
-      safeAppConnected &&
-      safeAppSdk &&
-      resolvedDestination.kind === 'safe' &&
-      safeAppRole === resolvedDestination.role
-        ? safeAppSdk
-        : null,
-    [safeAppConnected, safeAppSdk, safeAppRole, resolvedDestination]
-  );
 
   const writeSucceeded = write.isSuccess;
   const resetWrite = write.reset;
@@ -245,12 +195,6 @@ export function PublicAllocatorCaps({
     setPullDrafts(pullsNext);
     setIdleDraft(state.canPullFromIdle === true);
     setFormError(null);
-    setDestination(
-      coerceVaultWriteDestination(defaultAllocationDestination(allocators, walletAddress), {
-        eligibleSafeRoles: eligibleSafes,
-        preferredSafeRole: ALLOCATION_SAFE_ROLE,
-      })
-    );
     setEditing(true);
   }
 
@@ -349,49 +293,11 @@ export function PublicAllocatorCaps({
 
   async function confirm() {
     if (pendingChanges.length === 0) return;
-    if (!canConfirm) {
+    if (!walletReady) {
       setSubmitError(walletHint);
       return;
     }
     setSubmitError(null);
-
-    if (resolvedDestination.kind === 'safe') {
-      setQueueing(true);
-      try {
-        const calldata = encodePublicAllocatorUpdate(
-          getAddress(state.address),
-          getAddress(vaultAddress),
-          pendingChanges
-        );
-        await queueSafeTransaction({
-          safeRole: resolvedDestination.role,
-          calldata,
-          description: `Public Allocator caps — ${assetSymbol ?? vaultAddress}`,
-          preview: preview ?? {
-            title: 'Public Allocator caps',
-            changes: [],
-          },
-          source: {
-            type: 'public_allocator',
-            vaultAddress: getAddress(vaultAddress),
-            vaultSymbol: assetSymbol ?? undefined,
-          },
-          proposer: walletAddress ? getAddress(walletAddress) : undefined,
-          provider: await getConnectorProvider(connector),
-          safeAppSdk: safeApp,
-        });
-        setPreviewOpen(false);
-        setEditing(false);
-        router.push(`/safe/${resolvedDestination.role}/transactions`);
-      } catch (error) {
-        if (!isWalletRejection(error)) {
-          setSubmitError(error instanceof Error ? error.message : 'Failed to queue Safe transaction.');
-        }
-      } finally {
-        setQueueing(false);
-      }
-      return;
-    }
 
     try {
       write.reset();
@@ -571,7 +477,7 @@ export function PublicAllocatorCaps({
         open={previewOpen}
         preview={preview}
         onOpenChange={(open) => {
-          if (!open && (write.isLoading || queueing)) return;
+          if (!open && write.isLoading) return;
           setPreviewOpen(open);
           if (!open) {
             setSubmitError(null);
@@ -580,7 +486,7 @@ export function PublicAllocatorCaps({
           }
         }}
         onConfirm={confirm}
-        isLoading={write.isLoading || queueing}
+        isLoading={write.isLoading}
         error={submitError ? new Error(submitError) : write.error}
         isSuccess={write.isSuccess}
         txHash={write.txHash}
@@ -590,12 +496,9 @@ export function PublicAllocatorCaps({
             : null
         }
         destinationOptions={{
-          destination: resolvedDestination,
-          onDestinationChange: setDestination,
           walletReady,
           walletHint,
-          safeRoles: eligibleSafes,
-          confirmEnabled: canConfirm,
+          confirmEnabled: walletReady,
         }}
       />
     </div>

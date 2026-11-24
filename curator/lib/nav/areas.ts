@@ -46,9 +46,7 @@ export function resolveCuratorNavArea(pathname: string): CuratorNavArea {
     path === '/curator' ||
     path.startsWith('/curator/') ||
     path === '/morpho' ||
-    path.startsWith('/morpho/') ||
-    path === '/safe' ||
-    path.startsWith('/safe/')
+    path.startsWith('/morpho/')
   ) {
     return 'curator';
   }

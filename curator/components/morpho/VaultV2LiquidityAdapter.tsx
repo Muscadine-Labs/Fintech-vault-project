@@ -1,7 +1,6 @@
 'use client';
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { useRouter } from 'next/navigation';
 import { useAccount } from 'wagmi';
 import { useQueryClient } from '@tanstack/react-query';
 import type { Address } from 'viem';
@@ -29,22 +28,10 @@ import {
   resolveLiquidityDisplay,
   type LiquidityAdapterOption,
 } from '@/lib/morpho/vault-v2-liquidity';
-import { curatorWriteToCalldata } from '@/lib/morpho/vault-v2-curator-write';
 import type { VaultV2GovernanceResponse } from '@/app/api/vaults/[id]/governance/route';
 import type { V2VaultRiskResponse } from '@/app/api/vaults/[id]/risk/route';
 import { vaultV2GovernanceQueryKey } from '@/lib/hooks/useVaultV2Governance';
-import { queueSafeTransaction } from '@/lib/safe/queue-vault-write';
-import { getConnectorProvider } from '@/lib/wallet/connector-provider';
-import { useCuratorSafeApps } from '@/lib/safe/safe-apps-context';
-import { ALLOCATION_SAFE_ROLE, type SafeRole } from '@/lib/safe/config';
-import {
-  canConfirmVaultWriteDestination,
-  coerceVaultWriteDestination,
-  defaultAllocationDestination,
-  eligibleSafeRolesForAddresses,
-  walletCanSignAllocation,
-  type VaultWriteDestination,
-} from '@/lib/safe/vault-write-destination';
+import { walletCanSignAllocation } from '@/lib/vault/write-destination';
 
 interface VaultV2LiquidityAdapterProps {
   vaultAddress: string;
@@ -98,18 +85,10 @@ export function VaultV2LiquidityAdapter({
   const [previewOpen, setPreviewOpen] = useState(false);
   const [txPreview, setTxPreview] = useState<TxPreview | null>(null);
   const [submitError, setSubmitError] = useState<string | null>(null);
-  const [queueSafeError, setQueueSafeError] = useState<string | null>(null);
-  const [queueingSafe, setQueueingSafe] = useState(false);
-  const [writeDestination, setWriteDestination] = useState<VaultWriteDestination>(() =>
-    defaultAllocationDestination(governance?.allocators, undefined)
-  );
 
   const write = useVaultWrite({ chainId });
   const queryClient = useQueryClient();
-  const router = useRouter();
-  const { address: walletAddress, isConnected, connector } = useAccount();
-  const { connected: safeAppConnected, sdk: safeAppSdk, safeRole: safeAppRole } =
-    useCuratorSafeApps();
+  const { address: walletAddress, isConnected } = useAccount();
 
   useEffect(() => {
     if (!write.isSuccess) return;
@@ -130,23 +109,8 @@ export function VaultV2LiquidityAdapter({
   const allocatorWalletHint = !isConnected
     ? 'Connect your wallet in the top bar to sign directly with your EOA.'
     : !walletCanAllocate
-      ? 'Connected wallet is not an on-chain allocator — switch to an allocator EOA or queue in the Allocator Safe.'
+      ? 'Connected wallet is not an on-chain allocator for this vault — switch to an allocator wallet.'
       : undefined;
-  const eligibleAllocatorSafes = useMemo(
-    () => eligibleSafeRolesForAddresses(allocators),
-    [allocators]
-  );
-
-  const allocatorSafeAppSdk = useMemo(
-    () =>
-      safeAppConnected &&
-      safeAppSdk &&
-      writeDestination.kind === 'safe' &&
-      safeAppRole === writeDestination.role
-        ? safeAppSdk
-        : null,
-    [safeAppConnected, safeAppSdk, safeAppRole, writeDestination]
-  );
 
   const dec = resolveAssetDecimals(assetSymbol, assetDecimals ?? risk.vaultAsset?.decimals);
 
@@ -183,7 +147,6 @@ export function VaultV2LiquidityAdapter({
     setPreviewOpen(false);
     setTxPreview(null);
     setSubmitError(null);
-    setQueueSafeError(null);
     write.reset();
   }, [write]);
 
@@ -197,31 +160,14 @@ export function VaultV2LiquidityAdapter({
     if (!selected || selected.isCurrent || !governance) return;
 
     setSubmitError(null);
-    setQueueSafeError(null);
     setTxPreview(
       buildLiquidityAdapterPreview({
         currentLabel: display.label,
         selectedLabel: selected.label,
       })
     );
-    setWriteDestination(
-      coerceVaultWriteDestination(
-        defaultAllocationDestination(allocators, walletAddress),
-        {
-          eligibleSafeRoles: eligibleAllocatorSafes,
-          preferredSafeRole: ALLOCATION_SAFE_ROLE,
-        }
-      )
-    );
     setPreviewOpen(true);
-  }, [
-    selected,
-    governance,
-    display.label,
-    allocators,
-    walletAddress,
-    eligibleAllocatorSafes,
-  ]);
+  }, [selected, governance, display.label]);
 
   const runWalletSubmit = useCallback(async () => {
     if (!selected) return;
@@ -236,84 +182,15 @@ export function VaultV2LiquidityAdapter({
     }
   }, [selected, buildWriteConfig, write]);
 
-  const queueInSafe = useCallback(
-    async (safeRole: SafeRole) => {
-      if (!selected || !txPreview) return;
-
-      setQueueingSafe(true);
-      setQueueSafeError(null);
-
-      try {
-        const calldata = curatorWriteToCalldata(buildWriteConfig(selected));
-        await queueSafeTransaction({
-          safeRole,
-          calldata,
-          description: `Liquidity adapter — ${selected.label}`,
-          preview: txPreview,
-          source: {
-            type: 'allocation',
-            action: 'liquidity_adapter',
-            vaultAddress: getAddress(vaultAddress),
-            vaultSymbol: assetSymbol ?? undefined,
-          },
-          proposer: walletAddress ? getAddress(walletAddress) : undefined,
-          provider: await getConnectorProvider(connector),
-          safeAppSdk: allocatorSafeAppSdk,
-        });
-        setPreviewOpen(false);
-        closePanel();
-        router.push(`/safe/${safeRole}/transactions`);
-      } catch (e) {
-        setQueueSafeError(e instanceof Error ? e.message : 'Failed to queue Safe transaction.');
-      } finally {
-        setQueueingSafe(false);
-      }
-    },
-    [
-      selected,
-      txPreview,
-      buildWriteConfig,
-      vaultAddress,
-      assetSymbol,
-      allocatorSafeAppSdk,
-      closePanel,
-      connector,
-      router,
-      walletAddress,
-    ]
-  );
-
   const handlePreviewConfirm = useCallback(async () => {
-    if (
-      !canConfirmVaultWriteDestination(writeDestination, {
-        walletReady,
-        eligibleSafeRoles: eligibleAllocatorSafes,
-      })
-    ) {
-      if (writeDestination.kind === 'wallet') {
-        setSubmitError(
-          allocatorWalletHint ??
-            'Connect an allocator wallet in the top bar, or queue in the Allocator Safe.'
-        );
-      } else {
-        setQueueSafeError('Selected Safe is not an on-chain allocator for this vault.');
-      }
-      return;
-    }
-
-    if (writeDestination.kind === 'safe') {
-      await queueInSafe(writeDestination.role);
+    if (!walletReady) {
+      setSubmitError(
+        allocatorWalletHint ?? 'Connect an allocator wallet in the top bar.'
+      );
       return;
     }
     await runWalletSubmit();
-  }, [
-    writeDestination,
-    walletReady,
-    eligibleAllocatorSafes,
-    allocatorWalletHint,
-    queueInSafe,
-    runWalletSubmit,
-  ]);
+  }, [walletReady, allocatorWalletHint, runWalletSubmit]);
 
   if (!governance?.liquidityAdapter?.address && options.length === 0) {
     return null;
@@ -424,39 +301,24 @@ export function VaultV2LiquidityAdapter({
         open={previewOpen}
         preview={txPreview}
         onOpenChange={(open) => {
-          if (!open && ((write.isLoading && isBroadcastTxHash(write.txHash)) || queueingSafe)) {
+          if (!open && write.isLoading && isBroadcastTxHash(write.txHash)) {
             return;
           }
           setPreviewOpen(open);
           if (!open) {
             setTxPreview(null);
             setSubmitError(null);
-            setQueueSafeError(null);
             if (!isBroadcastTxHash(write.txHash)) write.reset();
           }
         }}
         destinationOptions={{
-          destination: writeDestination,
-          onDestinationChange: setWriteDestination,
           walletReady,
           walletHint: allocatorWalletHint,
-          safeRoles: eligibleAllocatorSafes,
-          confirmEnabled: canConfirmVaultWriteDestination(writeDestination, {
-            walletReady,
-            eligibleSafeRoles: eligibleAllocatorSafes,
-          }),
+          confirmEnabled: walletReady,
         }}
         onConfirm={() => handlePreviewConfirm()}
-        isLoading={writeDestination.kind === 'safe' ? queueingSafe : write.isLoading}
-        error={
-          submitError
-            ? new Error(submitError)
-            : queueSafeError
-              ? new Error(queueSafeError)
-              : write.error && writeDestination.kind === 'wallet'
-                ? write.error
-                : null
-        }
+        isLoading={write.isLoading}
+        error={submitError ? new Error(submitError) : write.error}
       />
     </div>
   );

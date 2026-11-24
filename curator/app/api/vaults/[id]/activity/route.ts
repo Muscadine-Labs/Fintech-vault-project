@@ -14,7 +14,7 @@ import { fetchVaultActivity } from '@/lib/morpho/vault-activity.server';
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
-/** Allocations (Morpho) + governance (role Safe history + pending submits) for one Vault V2. */
+/** Allocations and pending governance submits for one Vault V2. */
 export async function GET(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }

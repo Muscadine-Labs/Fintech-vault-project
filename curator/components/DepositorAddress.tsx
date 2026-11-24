@@ -16,7 +16,7 @@ type DepositorAddressProps = {
   onClick?: (e: React.MouseEvent<HTMLAnchorElement>) => void;
 };
 
-/** Truncated address with a vault or Safe badge, or Basename / ENS beside the address. */
+/** Truncated address with a vault badge, or Basename / ENS beside the address. */
 export function DepositorAddress({
   address,
   href,

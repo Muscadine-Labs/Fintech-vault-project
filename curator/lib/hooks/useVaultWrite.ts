@@ -18,7 +18,7 @@ interface WriteContractConfig {
   abi: Abi | readonly unknown[];
   functionName: string;
   args: readonly unknown[];
-  /** Native value (wei). Used for payable factory calls when the Safe payload sets `value`. */
+  /** Native value (wei). Used for payable calls. */
   value?: bigint;
 }
 

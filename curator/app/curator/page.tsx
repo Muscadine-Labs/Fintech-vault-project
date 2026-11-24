@@ -13,7 +13,6 @@ import {
   Plus,
   Shield,
   Sparkles,
-  Users,
   Wallet,
 } from 'lucide-react';
 import { AppShell } from '@/components/layout/AppShell';
@@ -45,15 +44,6 @@ type HubLink = {
   icon: typeof Shield;
   external?: boolean;
 };
-
-const IN_APP_TOOLS: readonly HubLink[] = [
-  {
-    title: 'Multisig Safe',
-    description: 'Queue and execute Curator / Allocator / Sentinel Safe transactions.',
-    href: '/safe',
-    icon: Users,
-  },
-];
 
 const CURATOR_EXTERNAL: readonly HubLink[] = [
   {
@@ -207,20 +197,6 @@ export default function CuratorToolsPage() {
       description="Curator hub — in-app flows and official Morpho surfaces."
     >
       <div className="mx-auto w-full max-w-4xl space-y-8">
-        <section className="space-y-3">
-          <CuratorSectionHeader
-            title="In this app"
-            description="Shortcuts into Vaults, Markets, and Safe. Primary nav is in the top bar."
-          />
-          <CuratorPanel>
-            <div className="divide-y divide-border">
-              {IN_APP_TOOLS.map((tool) => (
-                <HubLinkRow key={tool.href} tool={tool} />
-              ))}
-            </div>
-          </CuratorPanel>
-        </section>
-
         <section className="space-y-3">
           <CuratorSectionHeader
             title="Curator external"

@@ -30,7 +30,7 @@ Single entry for AI sessions. Deep architecture stays in **`CLAUDE.md`**. This f
 | **`TODO.md`** | Intent queue | Starting/finishing work |
 | **`docs/brain/`** | Closed-loop hub + changelog + MCP | Every substantive session |
 | **`AGENTS.md`** | Short invariants contract | Routes, auth, write rules, polling |
-| **`CLAUDE.md`** | Deep architecture | Vault mechanics, GraphQL, Safe, formatting |
+| **`CLAUDE.md`** | Deep architecture | Vault mechanics, GraphQL, wallet writes, formatting |
 | **`.cursor/rules/*.mdc`** | Always-on Cursor rules | Session protocol changes |
 | **`.cursor/mcp.json`** | Morpho MCP wiring | MCP server / tools change |
 
@@ -47,7 +47,7 @@ Single entry for AI sessions. Deep architecture stays in **`CLAUDE.md`**. This f
 | On-chain writes | §7 |
 | Auth | §9 |
 | Pitfalls | §10 |
-| Multisig Safe | §13 |
+| Multisig Safe (removed) | §13 |
 | CCTP | §14 (removed — not in tree) |
 | Theme / density | §16 |
 | Blue market writes | not in this dashboard |

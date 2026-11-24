@@ -49,8 +49,8 @@ npm run build   # next build
   (10 per page with arrows, default closed).
   Risk: market risk grades. Emergency actions on Sentinel (bottom).
   Pending actions embed in Caps and sit above the Timelocks delay list (accept and revoke). Sentinel is the only tab with sentinel writes (decrease caps,
-  deallocate). Public Allocator caps on the Caps tab are changed by an allocator
-  (connected allocator wallet, or the Allocator Safe) and apply immediately.
+  deallocate). Public Allocator caps on the Caps tab are changed by a connected
+  allocator wallet and apply immediately.
 - **Allocation edit amounts** — Rebalance inputs show **display** (Allocated
   column / Morpho supply). Planning maps display → booked via
   `booked + (input − display)` so unchanged rows are no-ops and accrued interest
@@ -59,13 +59,13 @@ npm run build   # next build
 - **Create Blue market / dead deposit** — same CLI (`blue create-market`).
   Browse Loan / Collateral / Search filter Blue **and** Midnight (`market-pair-filter.ts`).
   Top nav: Overview · Vaults · Markets · Curator. There is no Business tab.
-  Sidebar is area-scoped (`lib/nav/areas.ts`). Curator area: Curator tools ·
-  Multisig Safe. Overview Protocol KPIs are Morpho TVL, users, and active vaults
+  Sidebar is area-scoped (`lib/nav/areas.ts`). Curator area: Curator tools.
+  Overview Protocol KPIs are Morpho TVL, users, and active vaults
   (no DefiLlama). The Morpho section links
   [morpho-org/morpho-bots](https://github.com/morpho-org/morpho-bots). There is
   no in-app bot watch.
 - **Tx preview** — Allocation, Sentinel, and other vault role writes confirm
-  through `TxPreviewDialog` + `lib/morpho/tx-preview.ts` before queueing to a Safe.
+  through `TxPreviewDialog` + `lib/morpho/tx-preview.ts`, then the connected wallet signs.
 - **V2 pending revoke** — per-row `rowId` + `activeRowId`; never key tx state by
   `item.data` alone (batched pending actions can share calldata).
 - **V2 cap labels / idData** — governance `marketParams` + `fetch-markets-by-id.ts`
@@ -80,28 +80,14 @@ npm run build   # next build
   `CURATOR_REFETCH_INTERVAL_MS` and default `staleTime` are **30s** (capped via
   `API_CACHE_MAX_AGE_MS` in `lib/api/response-cache.ts`).
 - **No server-side private keys** — all writes go through the connected wallet.
-- **Multisig Safe** — Allocator/Sentinel Safes (`lib/safe/config.ts`):
-  queue from vault Allocation/Sentinel preview when governance lists the Safe as
-  role holder; **owners sign** on `/safe/[role]`; **any connected wallet can
-  execute** once signatures ≥ threshold (Safe `execTransaction` is permissionless). Execute drops signatures that do not recover to their owner; outcome events are read in both Safe v1.3.0 and v1.4.1+ layouts. `/api/safe/[address]/info` and `balances` serve configured Safes only.
-  **localStorage is always kept** (export/import); optional Transaction Service
-  sync via `NEXT_PUBLIC_SAFE_API_KEY` and `@safe-global/api-kit` ^5.x
-  (`lib/safe/transaction-service.ts`, `service-sync.ts`, rate limit in
-  `transaction-service-rate-limit.ts` — manual sync only, no polling). Tabs:
-  Home / Assets / Transactions / **History** (executed txs, on-demand) /
-  **Settings** (modules, guard, address book). Queue several proposals into one
-  MultiSend via `queueSafeBatch`. Safe Apps
-  SDK embed via `CuratorSafeAppsProvider` (`lib/safe/safe-apps-context.tsx`);
-  manifest at `public/manifest.json` (`favicon.svg`). Post-execute refetch
-  via `refetch-vault-after-safe-execute.ts`; queue previews always shown (stored
-  or decoded calldata in `decode-vault-calldata-preview.ts`). See `CLAUDE.md` §13.
+  There is no multisig Safe workspace and no Safe Transaction Service client.
 - **Morpho GraphQL** — use `marketId` → app `marketKey` (not `uniqueKey`);
   `oracle.address` (not `Market.oracleAddress`); V2 overview txs use
   `vaultV2transactions`. Client logs `extensions.warnings` via
   `lib/morpho/graphql-client.ts`. See `CLAUDE.md` §4.4.1.
 - **App routes** — `/` (Overview), `/vaults`, `/vault/[address]/*`,
-  `/markets`, `/market/blue/[id]`, `/midnight/[id]`, `/safe`, `/safe/[role]/{assets,transactions,history,settings}`,
-  `/curator` (Curator tools hub). No `/curator/gates`, `/curator/bots`,
+  `/markets`, `/market/blue/[id]`, `/midnight/[id]`,
+  `/curator` (Curator tools hub). `/safe` redirects to `/curator`. No `/curator/gates`, `/curator/bots`,
   or `/monthly-statement`.
   Deposit, lend, and create-market writes are not in this dashboard. Vault pages live
   at `/vault/[address]/*`; catalog at `/vaults`. Markets browse at `/markets`.
@@ -110,8 +96,7 @@ npm run build   # next build
   `GET /api/vaults/[id]/risk`, `…/governance`, `…/pending` (alongside
   `…/history`, `…/holders`, etc.); protocol drill-downs at
   `GET /api/protocol-users`, `GET /api/protocol-transactions`; Midnight books at
-  `GET /api/markets/midnight`, `GET /api/markets/midnight/[id]`; Safe extras at
-  `GET /api/safe/[address]/history`, `GET /api/safe/[address]/settings`.
+  `GET /api/markets/midnight`, `GET /api/markets/midnight/[id]`.
 - **Vault pages** — `app/vault/[address]/{page,allocation,caps,…}` via
   `VaultPageShell` (`'use client'` + React Query); keep **dynamic** (no
   SSG/`generateStaticParams` for vault addresses).
@@ -135,7 +120,7 @@ npm run build   # next build
   on Blue detail and Midnight collateral detail (Base RPC). Allocation
   tab market names link in-app via `curatorBlueMarketHref`. Vault Risk
   Analytics tab uses the same helper. Midnight rows use `curatorMidnightMarketHref`.
-  Sidebar Curator area: Curator tools + Multisig Safe. Markets area: Browse.
+  Sidebar Curator area: Curator tools. Markets area: Browse.
   Vaults area: All vaults + vault tree.
 - **Oracle freshness** — `resolveMarketOracleAddress` accepts `oracleAddress` or
   `oracle.address`; risk BFF GraphQL keeps minimal oracle fragments (`baseFeedOne`

@@ -1,10 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import { encodeFunctionData, encodePacked, type Hex } from 'viem';
+import { encodeFunctionData } from 'viem';
 import { vaultV2Abi } from '@/lib/onchain/abis';
 import {
   activityRoles,
   describeVaultCall,
-  governanceCallsFromSafeTx,
   matchPendingConfig,
   pendingStatus,
   signedAllocationAmount,
@@ -13,41 +12,8 @@ import {
 } from '@/lib/morpho/vault-activity';
 import { adapterAllocationRaw, summarizeAdapter } from '@/lib/morpho/vault-adapter-summary';
 
-const VAULT = '0xbeef0786756810478b88982DE00F3CD7fdB8e7c7';
-const OTHER = '0x0000000000000000000000000000000000000001';
-const MULTI_SEND_CALL_ONLY = '0x9641d764fc13c8B624c04430C7356C1C7C8102e2';
-
 const setMaxRate = encodeFunctionData({ abi: vaultV2Abi, functionName: 'setMaxRate', args: [1n] });
 const submitMaxRate = encodeFunctionData({ abi: vaultV2Abi, functionName: 'submit', args: [setMaxRate] });
-const allocate = encodeFunctionData({
-  abi: vaultV2Abi,
-  functionName: 'allocate',
-  args: [OTHER, '0x', 1n],
-});
-
-function multiSend(calls: Array<{ to: string; data: Hex }>): Hex {
-  const packed = calls
-    .map((c) =>
-      encodePacked(
-        ['uint8', 'address', 'uint256', 'uint256', 'bytes'],
-        [0, c.to as Hex, 0n, BigInt((c.data.length - 2) / 2), c.data]
-      ).slice(2)
-    )
-    .join('');
-  return encodeFunctionData({
-    abi: [
-      {
-        type: 'function',
-        name: 'multiSend',
-        stateMutability: 'payable',
-        inputs: [{ name: 'transactions', type: 'bytes' }],
-        outputs: [],
-      },
-    ],
-    functionName: 'multiSend',
-    args: [`0x${packed}`],
-  });
-}
 
 describe('describeVaultCall', () => {
   it('names direct and submitted calls', () => {
@@ -55,40 +21,6 @@ describe('describeVaultCall', () => {
     expect(describeVaultCall(submitMaxRate)).toBe('Submit setMaxRate');
     expect(describeVaultCall('0xdeadbeef')).toBeNull();
     expect(describeVaultCall(null)).toBeNull();
-  });
-});
-
-const actions = (calls: Array<{ action: string }>) => calls.map((c) => c.action);
-
-describe('governanceCallsFromSafeTx', () => {
-  it('reads direct vault calls and skips allocations', () => {
-    expect(governanceCallsFromSafeTx({ to: VAULT, data: submitMaxRate }, VAULT)).toEqual([
-      { action: 'Submit setMaxRate', submittedData: setMaxRate.toLowerCase() },
-    ]);
-    expect(governanceCallsFromSafeTx({ to: VAULT, data: allocate }, VAULT)).toEqual([]);
-  });
-
-  it('unpacks vault multicall and MultiSend batches, ignoring other targets', () => {
-    const multicall = encodeFunctionData({
-      abi: vaultV2Abi,
-      functionName: 'multicall',
-      args: [[setMaxRate, allocate]],
-    });
-    expect(governanceCallsFromSafeTx({ to: VAULT, data: multicall }, VAULT)).toEqual([
-      { action: 'setMaxRate', submittedData: null },
-    ]);
-
-    const batch = multiSend([
-      { to: VAULT, data: submitMaxRate },
-      { to: OTHER, data: setMaxRate },
-    ]);
-    expect(
-      actions(governanceCallsFromSafeTx({ to: MULTI_SEND_CALL_ONLY, data: batch }, VAULT.toLowerCase()))
-    ).toEqual(['Submit setMaxRate']);
-  });
-
-  it('ignores Safe txs to other contracts', () => {
-    expect(governanceCallsFromSafeTx({ to: OTHER, data: setMaxRate }, VAULT)).toEqual([]);
   });
 });
 
@@ -178,30 +110,17 @@ describe('matchPendingConfig', () => {
   ];
 
   it('matches each submit in a batch to its own config', () => {
-    const calls = governanceCallsFromSafeTx(
-      {
-        to: VAULT,
-        data: encodeFunctionData({
-          abi: vaultV2Abi,
-          functionName: 'multicall',
-          args: [
-            [
-              encodeFunctionData({ abi: vaultV2Abi, functionName: 'submit', args: [setMaxRate2] }),
-              submitMaxRate,
-              setMaxRate,
-            ],
-          ],
-        }),
-      },
-      VAULT
-    );
+    const calls = [
+      { submittedData: setMaxRate2.toLowerCase() },
+      { submittedData: setMaxRate.toLowerCase() },
+      { submittedData: null },
+    ];
     const taken = new Set<number>();
     const matched = calls.map((c) => {
       const i = matchPendingConfig({ txHash: TX, submittedData: c.submittedData }, pending, taken);
       if (i >= 0) taken.add(i);
       return i >= 0 ? pending[i].validAt : null;
     });
-    // submit(setMaxRate(2)) → 300, submit(setMaxRate(1)) → 100, direct setter → none.
     expect(matched).toEqual([300, 100, null]);
   });
 

@@ -9,7 +9,6 @@ import {
   Moon,
   Waves,
   Shield,
-  Users,
   Wrench,
   X,
   ChevronDown,
@@ -299,13 +298,6 @@ function AreaSidebar({
           label="Curator tools"
           icon={Wrench}
           active={pathname === '/curator'}
-          onClick={onLinkClick}
-        />
-        <NavLink
-          href="/safe"
-          label="Multisig Safe"
-          icon={Users}
-          active={isActive('/safe')}
           onClick={onLinkClick}
         />
       </div>

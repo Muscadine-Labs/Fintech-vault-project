@@ -10,7 +10,6 @@ import { useAppKitTheme } from '@reown/appkit/react';
 import { useTheme, ThemeProvider } from '@/lib/theme/ThemeContext';
 import { CopyFeedbackProvider } from '@/components/CopyFeedbackProvider';
 import { ErrorBoundary } from '@/components/ErrorBoundary';
-import { CuratorSafeAppsProvider } from '@/lib/safe/safe-apps-context';
 import { CuratorNetworkProvider } from '@/lib/network/CuratorNetworkContext';
 
 const ReactQueryDevtools = dynamic(
@@ -60,11 +59,9 @@ export function Providers({
         <WagmiProvider config={config} initialState={initialState} reconnectOnMount>
           <AppKitThemeSync />
           <CuratorNetworkProvider>
-            <CuratorSafeAppsProvider>
-              <CopyFeedbackProvider>
-                <ErrorBoundary>{children}</ErrorBoundary>
-              </CopyFeedbackProvider>
-            </CuratorSafeAppsProvider>
+            <CopyFeedbackProvider>
+              <ErrorBoundary>{children}</ErrorBoundary>
+            </CopyFeedbackProvider>
           </CuratorNetworkProvider>
           {process.env.NODE_ENV === 'development' && (
             <ReactQueryDevtools initialIsOpen={false} />

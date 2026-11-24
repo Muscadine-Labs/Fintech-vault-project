@@ -61,7 +61,7 @@ function updateCall(vault: Address, changes: PublicAllocatorChange[]): PublicAll
   };
 }
 
-/** Safe calldata for an allocator update. */
+/** Calldata for a Public Allocator update. */
 export function encodePublicAllocatorUpdate(
   allocator: Address,
   vault: Address,
@@ -150,7 +150,7 @@ function previewChangesFromCalldata(
   }
 }
 
-/** Fallback preview when a Safe row targets the Public Allocator and has no stored preview. */
+/** Preview decoded from Public Allocator calldata when no stored preview exists. */
 export function buildPublicAllocatorCalldataPreview(input: {
   data: Hex;
   vaultSymbol?: string | null;

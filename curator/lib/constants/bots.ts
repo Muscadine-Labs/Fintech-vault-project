@@ -10,7 +10,7 @@ const VAULT_V2_PUBLIC_ALLOCATOR_BY_CHAIN: Record<number, Address> = {
   [BASE_CHAIN_ID]: '0xAED282B8aD9257BB1272e93aE63A32A53621e412',
 } as const satisfies Record<number, Address>;
 
-/** Public Morpho allocator on Base (not your Allocator Safe). */
+/** Public Morpho allocator on Base. */
 export const PUBLIC_ALLOCATOR_ADDRESS: Address =
   VAULT_V2_PUBLIC_ALLOCATOR_BY_CHAIN[BASE_CHAIN_ID];
 

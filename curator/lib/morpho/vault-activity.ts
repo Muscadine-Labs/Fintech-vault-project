@@ -1,6 +1,5 @@
 import { decodeFunctionData, type Hex } from 'viem';
 import { vaultV2Abi } from '@/lib/onchain/abis';
-import { decodeMultiSend, isKnownMultiSend } from '@/lib/safe/multisend';
 
 /**
  * Vault activity feed (Morpho Curator style): allocations and governance in
@@ -16,7 +15,7 @@ export type VaultActivityRow = {
   type: VaultActivityType;
   /** e.g. `allocate`, `deallocate`, `Submit increaseAbsoluteCap`, `setIsAllocator`. */
   action: string;
-  /** Address that sent the call (allocator EOA / Safe), when known. */
+  /** Address that sent the call, when known. */
   actor: string | null;
   /** Signed raw asset change for allocations (+ allocate, − deallocate). */
   amount: string | null;
@@ -27,8 +26,6 @@ export type VaultActivityRow = {
   /** Governance submissions still inside their timelock. */
   pending?: { validAt: number } | null;
 };
-
-const VAULT_WRITE_SKIP = new Set(['allocate', 'deallocate', 'multicall']);
 
 type DecodedVaultCall = { functionName: string; args?: readonly unknown[] };
 
@@ -55,65 +52,6 @@ function describeDecoded(decoded: DecodedVaultCall): string {
 export function describeVaultCall(data: string | null | undefined): string | null {
   const decoded = decodeVaultCall(data);
   return decoded ? describeDecoded(decoded) : null;
-}
-
-export type GovernanceCall = {
-  /** e.g. `Submit increaseAbsoluteCap`, `setIsAllocator`. */
-  action: string;
-  /**
-   * For `submit(data)`: the submitted calldata — the identity Morpho's
-   * `pendingConfigs[].data` carries, so a batch of submits with different
-   * timelocks reconciles call by call. Null for any other call.
-   */
-  submittedData: string | null;
-};
-
-/** One decoded call → governance row (allocations skipped). Decodes nothing again. */
-function governanceCall(decoded: DecodedVaultCall): GovernanceCall | null {
-  const action = describeDecoded(decoded);
-  if (VAULT_WRITE_SKIP.has(action)) return null;
-  const submitted =
-    decoded.functionName === 'submit' ? String(decoded.args?.[0] ?? '').toLowerCase() : '';
-  return { action, submittedData: submitted || null };
-}
-
-/**
- * Governance calls a Safe tx made on `vault`: a direct call, a vault
- * `multicall`, or calls inside a canonical MultiSend batch. Allocations are
- * left out — Morpho indexes those with amounts.
- */
-export function governanceCallsFromSafeTx(
-  tx: { to: string; data: string | null },
-  vault: string
-): GovernanceCall[] {
-  const target = vault.toLowerCase();
-  const calls: Hex[] = [];
-  if (tx.to.toLowerCase() === target && tx.data) {
-    calls.push(tx.data as Hex);
-  } else if (isKnownMultiSend(tx.to) && tx.data) {
-    for (const inner of decodeMultiSend(tx.data as Hex) ?? []) {
-      if (inner.to.toLowerCase() === target) calls.push(inner.data);
-    }
-  }
-
-  const out: GovernanceCall[] = [];
-  for (const data of calls) {
-    const decoded = decodeVaultCall(data);
-    if (!decoded) {
-      out.push({ action: 'Unknown call', submittedData: null });
-      continue;
-    }
-    // Each call is decoded once; a multicall decodes its inner calls once each.
-    const inner =
-      decoded.functionName === 'multicall'
-        ? ((decoded.args?.[0] as readonly Hex[] | undefined) ?? []).map(decodeVaultCall)
-        : [decoded];
-    for (const call of inner) {
-      const g = call ? governanceCall(call) : null;
-      if (g) out.push(g);
-    }
-  }
-  return out;
 }
 
 /**
@@ -168,7 +106,7 @@ export function signedAllocationAmount(input: {
 }
 
 /**
- * Pending submissions with no executed Safe row first (their only time is the
+ * Pending submissions with no executed row first (their only time is the
  * future unlock), then newest first; stable on ties by id.
  */
 export function sortActivity(rows: VaultActivityRow[]): VaultActivityRow[] {

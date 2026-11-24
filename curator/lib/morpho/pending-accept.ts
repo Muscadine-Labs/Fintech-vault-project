@@ -252,8 +252,8 @@ export function buildPendingAcceptPreview(input: {
   return {
     title,
     description: vaultSymbol
-      ? `Execute this timelocked ${vaultSymbol} vault change (caps, adapters, roles, fees, …) after the waiting period. Any wallet or multisig may submit the accept transaction.`
-      : 'Execute this timelocked vault change after the waiting period. Any wallet or multisig may submit the accept transaction.',
+      ? `Execute this timelocked ${vaultSymbol} vault change (caps, adapters, roles, fees, …) after the waiting period. Any connected wallet may submit the accept transaction.`
+      : 'Execute this timelocked vault change after the waiting period. Any connected wallet may submit the accept transaction.',
     changes,
     footnote:
       item.status === 'waiting'

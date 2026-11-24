@@ -33,8 +33,8 @@ There are three upstreams. The template repo https://github.com/Muscadine-Labs/F
 | Folder | Upstream | Branch | Last synced commit |
 | --- | --- | --- | --- |
 | root files | https://github.com/Muscadine-Labs/Fintech-vault-project | `main` | none recorded yet. On the first sync, compare the root files against the template's current `main`, then record its SHA and date here. |
-| `app` | https://github.com/Muscadine-Labs/app | `main` | `047e7a520fb85960828f713661f0e74fdd4b5877` (2026-11-24, PR #150) |
-| `curator` | https://github.com/Muscadine-Labs/curator | `main` | `fd5fac5a00c51d3ca9f918bad508ae48feedebea` (2026-11-24, PR #89) |
+| `app` | https://github.com/Muscadine-Labs/app | `main` | `12b522ca9f443a2156ff4759cd9d9c01749b7ad3` (2026-11-24, PR #151) |
+| `curator` | https://github.com/Muscadine-Labs/curator | `main` | `83829a6b80cf95ca98ce2a24d76f500940601fe3` (2026-11-24, PR #90) |
 
 The README has the same table. Update both together.
 

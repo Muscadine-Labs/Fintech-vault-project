@@ -462,7 +462,7 @@ src/
     common/               # ErrorBoundary, CopiableAddress
   config/
     wagmi.ts              # Base + Alchemy + Reown WagmiAdapter
-    appkit.ts             # createAppKit (no SIWE/SIWX; EIP-6963 + featured Base/Rabby/Phantom)
+    appkit.ts             # createAppKit (no SIWE/SIWX; EIP-6963 + featured Base/MetaMask/Rabby/Phantom)
     navigation.tsx        # Nav links (Dashboard, Vaults)
   contexts/               # See table above
   hooks/

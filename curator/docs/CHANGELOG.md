@@ -2,7 +2,7 @@
 
 Notes from before this student template are not included.
 
-## 2026-11-24 — Upstream sync to curator fd5fac5
+## 2026-11-24 — Upstream sync to curator 83829a6
 
 - wagmi 3, Reown AppKit 2 and `@wagmi/connectors` 8. Code uses `useConnection` (not `useAccount`) and `mutateAsync` on mutation hooks.
 - Base Account and Coinbase Wallet connectors are lazy (`lib/wallet/lazy-connectors.ts`): neither SDK loads on page load; Base Account telemetry is off. `coinbase-connector.ts` is gone.

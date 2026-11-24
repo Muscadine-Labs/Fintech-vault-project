@@ -1,14 +1,5 @@
-import {
-  decodeFunctionData,
-  encodeFunctionData,
-  getAddress,
-  type Address,
-  type Hex,
-} from 'viem';
-import { resolveAssetDecimals } from '@/lib/format/asset-decimals';
-import { formatRawTokenAmount } from '@/lib/format/number';
+import { encodeFunctionData, getAddress, type Address, type Hex } from 'viem';
 import type { PublicAllocatorChange } from '@/lib/morpho/v2-public-allocator-plan';
-import type { TxPreview, TxPreviewChange } from '@/lib/morpho/tx-preview';
 import { vaultV2BluePublicAllocatorAbi } from '@/lib/onchain/abis';
 
 function asMarketParams(market: readonly [Address, Address, Address, Address, bigint]) {
@@ -86,101 +77,5 @@ export function publicAllocatorWriteConfig(
     address: getAddress(allocator),
     abi: vaultV2BluePublicAllocatorAbi,
     ...updateCall(vault, changes),
-  };
-}
-
-function permissionLabel(allowed: boolean): string {
-  return allowed ? 'Allowed' : 'Not allowed';
-}
-
-function amountLabel(
-  raw: bigint,
-  symbol: string | null | undefined,
-  apiDecimals: number | null | undefined
-): string {
-  if (!symbol) return `${raw.toString()} raw`;
-  const decimals = resolveAssetDecimals(symbol, apiDecimals ?? undefined);
-  return `${formatRawTokenAmount(raw, decimals, 2)} ${symbol}`;
-}
-
-function previewChangesFromCalldata(
-  data: Hex,
-  symbol: string | null | undefined,
-  apiDecimals: number | null | undefined
-): TxPreviewChange[] {
-  try {
-    const decoded = decodeFunctionData({ abi: vaultV2BluePublicAllocatorAbi, data });
-    if (decoded.functionName === 'multicall') {
-      const inner = decoded.args[0] as readonly Hex[];
-      return inner.flatMap((call) => previewChangesFromCalldata(call, symbol, apiDecimals));
-    }
-    if (decoded.functionName === 'setCanPullFromIdle') {
-      const allowed = Boolean(decoded.args[1]);
-      return [
-        {
-          action: 'config',
-          label: 'Allow allocations from idle',
-          after: permissionLabel(allowed),
-        },
-      ];
-    }
-    if (decoded.functionName === 'setAbsoluteCap') {
-      const cap = decoded.args[3] as bigint;
-      return [
-        {
-          action: 'config',
-          label: 'Public Allocator cap',
-          after: amountLabel(cap, symbol, apiDecimals),
-        },
-      ];
-    }
-    if (decoded.functionName === 'setCanPullFromMarket') {
-      const allowed = Boolean(decoded.args[3]);
-      return [
-        {
-          action: 'config',
-          label: 'Allow deallocation',
-          after: permissionLabel(allowed),
-        },
-      ];
-    }
-    return [];
-  } catch {
-    return [];
-  }
-}
-
-/** Preview decoded from Public Allocator calldata when no stored preview exists. */
-export function buildPublicAllocatorCalldataPreview(input: {
-  data: Hex;
-  vaultSymbol?: string | null;
-  assetDecimals?: number | null;
-}): TxPreview {
-  const changes = previewChangesFromCalldata(
-    input.data,
-    input.vaultSymbol,
-    input.assetDecimals
-  );
-  if (changes.length === 0) {
-    return {
-      title: 'Public Allocator update',
-      description: 'Could not decode Public Allocator calldata.',
-      changes: [
-        {
-          action: 'call',
-          label: 'Undecoded calldata',
-          subtitle: input.data.slice(0, 18),
-        },
-      ],
-    };
-  }
-  return {
-    title: changes.length === 1 ? 'Public Allocator update' : 'Public Allocator updates',
-    description: 'Sent to the Blue Public Allocator. Applies immediately.',
-    changes,
-    footnote:
-      changes.length > 1
-        ? `${changes.length} settings batched via multicall.`
-        : null,
   };
 }

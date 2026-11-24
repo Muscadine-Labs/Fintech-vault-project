@@ -1,7 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { useAccount } from 'wagmi';
+import { useConnection } from 'wagmi';
 import { useQueryClient } from '@tanstack/react-query';
 import type { Address, Hex } from 'viem';
 import { Skeleton } from '@/components/ui/skeleton';
@@ -84,7 +84,7 @@ export function VaultV2Pending({
   const revokeWrite = useVaultWrite({ chainId });
   const acceptWrite = useVaultWrite({ chainId });
   const queryClient = useQueryClient();
-  const { isConnected, address: walletAddress } = useAccount();
+  const { isConnected, address: walletAddress } = useConnection();
 
   const [acceptPreviewOpen, setAcceptPreviewOpen] = useState(false);
   const [acceptPreview, setAcceptPreview] = useState<TxPreview | null>(null);

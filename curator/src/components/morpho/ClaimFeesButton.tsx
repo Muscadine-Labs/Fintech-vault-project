@@ -1,7 +1,7 @@
 'use client';
 
 import { useCallback, useState } from 'react';
-import { useAccount, usePublicClient } from 'wagmi';
+import { useConnection, usePublicClient } from 'wagmi';
 import { getAddress } from 'viem';
 import { Button } from '@/components/ui/button';
 import { TxPreviewDialog } from '@/components/morpho/TxPreviewDialog';
@@ -44,7 +44,7 @@ export function ClaimFeesButton({
 }) {
   const publicClient = usePublicClient({ chainId });
   const write = useVaultWrite({ chainId });
-  const { isConnected } = useAccount();
+  const { isConnected } = useConnection();
   const [open, setOpen] = useState(false);
   const [preview, setPreview] = useState<TxPreview | null>(null);
   const [assets, setAssets] = useState(0n);

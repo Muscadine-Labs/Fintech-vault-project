@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
-import { useAccount } from 'wagmi';
+import { useConnection } from 'wagmi';
 import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
 import { Skeleton } from '@/components/ui/skeleton';
@@ -355,7 +355,7 @@ function DecreaseCapsPanel({
   const [rowErrors, setRowErrors] = useState<Record<string, string>>({});
   const pendingConfirmRef = useRef<(() => Promise<void>) | null>(null);
   const queryClient = useQueryClient();
-  const { address: walletAddress, isConnected } = useAccount();
+  const { address: walletAddress, isConnected } = useConnection();
 
   const walletCanUseSentinel = walletCanSignSentinel(walletAddress, sentinels);
   const walletReady = isConnected && walletCanUseSentinel;
@@ -807,7 +807,7 @@ function DeallocatePanel({
   const [rowErrors, setRowErrors] = useState<Record<string, string>>({});
   const pendingConfirmRef = useRef<(() => Promise<void>) | null>(null);
   const queryClient = useQueryClient();
-  const { address: walletAddress, isConnected } = useAccount();
+  const { address: walletAddress, isConnected } = useConnection();
 
   const walletCanUseSentinel = walletCanSignSentinel(walletAddress, sentinels);
   const walletReady = isConnected && walletCanUseSentinel;

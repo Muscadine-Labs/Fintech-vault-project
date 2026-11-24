@@ -80,7 +80,7 @@ Copy `.env.example` → `.env.local`. Summary:
 - Next.js 16.4 (App Router, webpack)
 - TypeScript 6
 - Tailwind CSS 4 + shadcn/ui
-- Wagmi 2 + Reown AppKit (wallet)
+- wagmi 3 + Reown AppKit 2 (wallet)
 - Viem (blockchain)
 - TanStack Query (data fetching)
 - Vitest 5

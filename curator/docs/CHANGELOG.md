@@ -2,6 +2,15 @@
 
 Notes from before this student template are not included.
 
+## 2026-11-24 — Upstream sync to curator fd5fac5
+
+- wagmi 3, Reown AppKit 2 and `@wagmi/connectors` 8. Code uses `useConnection` (not `useAccount`) and `mutateAsync` on mutation hooks.
+- Base Account and Coinbase Wallet connectors are lazy (`lib/wallet/lazy-connectors.ts`): neither SDK loads on page load; Base Account telemetry is off. `coinbase-connector.ts` is gone.
+- AppKit font variables are `inherit` (no `fonts.reown.com` requests); npm scripts set `NEXT_TELEMETRY_DISABLED=1`.
+- Dependency patches and overrides from upstream. Node stays 24 for this template.
+- `public/manifest.json` (Safe App manifest) removed; CSP is `frame-ancestors 'none'`.
+- `docs/morpho-rest-migration.md` added: plan for Morpho's GraphQL shutdown on 2027-01-29.
+
 ## 2026-11-24 — Source under src, markets in one route tree
 
 - Curator source now lives in `src/app`, `src/components`, and `src/lib`, matching the depositor app. `@/` points at `src/`.

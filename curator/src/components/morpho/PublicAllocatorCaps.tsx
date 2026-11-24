@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
-import { useAccount } from 'wagmi';
+import { useConnection } from 'wagmi';
 import { getAddress } from 'viem';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -118,7 +118,7 @@ export function PublicAllocatorCaps({
   assetDecimals?: number | null;
 }) {
   const queryClient = useQueryClient();
-  const { address: walletAddress, isConnected } = useAccount();
+  const { address: walletAddress, isConnected } = useConnection();
   const write = useVaultWrite({ chainId });
   const settledWrite = useRef(false);
 

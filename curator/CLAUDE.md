@@ -56,6 +56,23 @@ managing and reporting on Morpho-style vaults on Base (chainId `8453`). It cover
   `lib/wallet/appkit.ts`, custom connect button in topbar). Featured wallets
   (in order): **Rabby, MetaMask, Base, Phantom** — plus WalletConnect and
   injected EIP-6963. No server-side private keys for vault writes.
+- **Privacy**: no optional analytics or telemetry. AppKit `features.analytics:
+  false` (Reown still receives its mandatory `INITIALIZE` / `CONNECT_SUCCESS`
+  events and wallet-list impressions). Base Account connector sets
+  `telemetry: false`. It and our Coinbase Wallet connector (id renamed to
+  `coinbaseWallet` so AppKit lists it and adds no second one) are lazy
+  (`lib/wallet/lazy-connectors.ts`: kept out of wagmi's mount-time reconnect, so
+  each SDK and its COOP `HEAD` request run only once it is used; a disconnect, from
+  the app or the wallet, is remembered, and cleared only after a successful connect).
+  `preloadWalletSdks()` fetches both SDK chunks when Connect is opened
+  (`ConnectWalletButton`, `TransactionButton`; same-origin, starts no SDK) so the
+  first connect does not import between the click and the wallet popup. `@coinbase/wallet-sdk` is pinned at 4.4
+  (no telemetry) and the `@reown/appkit-utils` override dedupes AppKit's nested SDK
+  copies onto ours.
+  npm scripts set `NEXT_TELEMETRY_DISABLED=1`. AppKit's font variables are
+  `inherit` (the modal uses the page font; a `var(--font-…)` value is undefined on
+  `:root` where AppKit declares it), which also stops it loading fonts from
+  `fonts.reown.com` on every page. Do not add analytics.
 - **GraphQL**: Morpho Blue API (`https://api.morpho.org/graphql`) via
   `graphql-request` in `lib/morpho/graphql-client.ts`. **Vault list, detail,
   history, risk, and protocol stats BFF routes use this client directly** — not
@@ -1324,12 +1341,26 @@ Ranges in `package.json` match the installed versions. Do not take these majors:
 - **ESLint 9** — `eslint@^9.39.5` and `@eslint/js@^9.39.5`. Do **not** upgrade to
   ESLint 10 while using `eslint-config-next`; transitive plugins (`eslint-plugin-react`,
   etc.) still break on removed ESLint 10 APIs.
-- **wagmi 2** — `wagmi@^2.19.5`. `@reown/appkit-adapter-wagmi` peers `wagmi@2`.
-  Do not upgrade to wagmi 3 until AppKit supports it.
+- **wagmi 3 / AppKit 2** — `wagmi@3.7.11` (exact: it pins `@wagmi/core` / `@wagmi/connectors` exactly, so a looser range would let `npm update` mismatch them against the overrides), `@reown/appkit*@^2.0.0`,
+  `@wagmi/connectors@8.2.4` (direct, `$` override) and `@wagmi/core` 3.6.9
+  (override). AppKit 2 peers wagmi / `@wagmi/core` ≥3 and `@wagmi/connectors`
+  ≥8, so bump them together. Connector SDKs are optional peers in connectors 8:
+  `@base-org/account` (2.6.0) and `@coinbase/wallet-sdk` (4.4.0) are exact direct
+  deps (the privacy claims depend on those versions) because
+  `lib/wallet/config.ts` registers those connectors. Import connectors from
+  their subpaths (`@wagmi/connectors/baseAccount`, `/coinbaseWallet`), never the
+  `wagmi/connectors` barrel: the barrel pulls in MetaMask / WalletConnect /
+  Tempo connectors whose SDKs are not installed, and webpack warns on every
+  build. wagmi 3 API names: `useConnection` (not `useAccount`), `useConnectors` (not `useConnect().connectors`), and `mutate` / `mutateAsync` on mutation hooks (`useConnect`, `useSwitchChain`, `useWriteContract`, `useSendTransaction`) instead of `connectAsync` / `switchChainAsync` / `writeContractAsync` / `sendTransactionAsync`; the old names are deprecated aliases. `useBalance` has no `formatted` field (use viem `formatUnits(value, decimals)`).
+- **`npm ls` noise** — `@x402/*` 2.27.0 (pinned by `@reown/appkit-utils`) shows as
+  invalid for `@coinbase/cdp-sdk`'s optional `^2.29.0` peer. Never bundled
+  (`next.config.ts` aliases the client paths); `.npmrc` `legacy-peer-deps=true`
+  keeps `npm ci` passing. Overrides for packages no longer in the tree (`uuid`,
+  `lodash`, `hono`, `socket.io-parser`, `decode-uri-component`, `qr`) were removed.
 - **TypeScript 6** — installed `typescript-eslint` peers `typescript >=4.8.4 <6.1.0`;
   stay on `typescript@^6.0.3` (not 7).
-- **ox 0.14 / Vitest 5** — `ox@^0.14.60`, `vitest@^5.1.0`, with `vite@^8.3.5` because Vitest 5 imports Vite directly. ox 1 stays off.
-- **`sharp` override** — `>=0.35.4`, matching Next’s optional `sharp@^0.35.4`
+- **ox 0.14 / Vitest 5** — `ox@0.14.67` (exact: the version viem 2.58.6 depends on; bump both together — `viem` is pinned exact too, so `npm update` cannot pull a viem that needs a newer ox), `vitest@^5.1.1`, with `vite@^8.3.8` because Vitest 5 imports Vite directly. ox 1 stays off.
+- **`sharp` override** — `>=0.35.5`, at or above Next’s optional `sharp@^0.35.4`
   (libvips CVEs, GHSA-f88m-g3jw-g9cj).
 - **`eslint.config.mjs`** — official Next.js flat config:
   `eslint-config-next/core-web-vitals` + `eslint-config-next/typescript` (lints all

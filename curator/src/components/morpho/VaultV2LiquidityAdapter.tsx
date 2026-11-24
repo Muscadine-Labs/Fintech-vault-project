@@ -1,7 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { useAccount } from 'wagmi';
+import { useConnection } from 'wagmi';
 import { useQueryClient } from '@tanstack/react-query';
 import type { Address } from 'viem';
 import { getAddress } from 'viem';
@@ -88,7 +88,7 @@ export function VaultV2LiquidityAdapter({
 
   const write = useVaultWrite({ chainId });
   const queryClient = useQueryClient();
-  const { address: walletAddress, isConnected } = useAccount();
+  const { address: walletAddress, isConnected } = useConnection();
 
   useEffect(() => {
     if (!write.isSuccess) return;

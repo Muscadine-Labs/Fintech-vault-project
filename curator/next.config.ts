@@ -56,8 +56,8 @@ const nextConfig: NextConfig = {
       "lokijs",
       "encoding",
     ];
-    // viem → ox (Tempo chain): dynamic require in a dependency.
-    // Harmless; silences "Compiled with warnings" on Vercel.
+    // ox's Tempo chain module (pulled in through viem) has a dynamic require; harmless.
+    // Silences "Compiled with warnings" on Vercel.
     config.ignoreWarnings = [
       ...(Array.isArray(config.ignoreWarnings) ? config.ignoreWarnings : []),
       {
@@ -89,8 +89,9 @@ const nextConfig: NextConfig = {
             value: 'max-age=63072000',
           },
           {
+            // Admin tool: nothing needs to embed it, so no framing.
             key: 'Content-Security-Policy',
-            value: "frame-ancestors 'self'",
+            value: "frame-ancestors 'none'",
           },
           {
             key: 'X-Content-Type-Options',

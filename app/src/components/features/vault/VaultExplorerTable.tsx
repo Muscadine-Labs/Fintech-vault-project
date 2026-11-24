@@ -4,7 +4,7 @@ import { useMemo, type KeyboardEvent, type ReactNode } from 'react';
 import { useTokenLogo } from '@/contexts/PriceContext';
 import Image from 'next/image';
 import { useRouter } from 'next/navigation';
-import { useAccount } from 'wagmi';
+import { useConnection } from 'wagmi';
 import { Vault } from '@/types/vault';
 import type { MorphoVaultData } from '@/types/vault';
 import { useVaultData } from '@/contexts/VaultDataContext';
@@ -210,7 +210,7 @@ function EarnedInterestCell({
   decimals: number;
   align?: 'start' | 'end';
 }) {
-  const { address } = useAccount();
+  const { address } = useConnection();
   const { morphoHoldings } = useWallet();
 
   const walletPosition = useMemo(
@@ -412,7 +412,7 @@ function DashboardVaultMobileCard({
   vaultData: MorphoVaultData | null;
 }) {
   const router = useRouter();
-  const { address } = useAccount();
+  const { address } = useConnection();
   const { morphoHoldings } = useWallet();
   const decimals = resolveAssetDecimals(vault.symbol, vaultData?.assetDecimals);
   const isCurated = isCuratedVaultAddress(vault.address);
@@ -531,7 +531,7 @@ function PositionCell({
 }) {
   const { morphoHoldings } = useWallet();
   const { getVaultData } = useVaultData();
-  const { address } = useAccount();
+  const { address } = useConnection();
 
   const vaultData = getVaultData(vault.address);
   const position = morphoHoldings.positions.find(
@@ -702,7 +702,7 @@ export default function VaultExplorerTable({
   emptyMessage = 'No vaults match the selected filters.',
 }: VaultExplorerTableProps) {
   const isMounted = useIsClient();
-  const { isConnected } = useAccount();
+  const { isConnected } = useConnection();
   const showYourPosition = isConnected;
 
   if (!isMounted) {
@@ -850,7 +850,7 @@ function DashboardVaultEmptyState({
 /** One dashboard vault row: this contract's own position, profit, APY and TVL. */
 function DashboardVaultRow({ vault }: { vault: Vault }) {
   const router = useRouter();
-  const { address } = useAccount();
+  const { address } = useConnection();
   const { morphoHoldings } = useWallet();
   const { getVaultData, isLoading } = useVaultData();
   const vaultData = getVaultData(vault.address) as MorphoVaultData | null;

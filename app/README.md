@@ -68,6 +68,8 @@ Copy `.env.example` → `.env.local`.
 | `NEXT_PUBLIC_WALLETCONNECT_PROJECT_ID` | **Yes** | Reown AppKit / WalletConnect |
 | `NEXT_PUBLIC_URL` | No | If unset: `http://localhost:3000` locally, the Vercel production domain on Vercel |
 
+**Wallets:** Reown AppKit with injected (EIP-6963) wallets, WalletConnect, Coinbase Wallet and Base Account (smart wallet) through the app's own lazy connectors (`src/lib/lazy-connectors.ts`; Base Account telemetry off). Plain web app: no Base App / mini-app integration.
+
 Run `npm run lint` and `npm run build` locally before you push. Production `npm run build` also runs on Vercel with the env vars set there.
 
 ## Deployment checklist

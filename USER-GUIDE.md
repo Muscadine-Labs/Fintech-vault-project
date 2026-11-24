@@ -6,11 +6,11 @@ List the same vault addresses in both files. Delete the example rows and add one
 
 **App:** `app/src/lib/vaults.ts`, in `VAULTS`: `address`, `name` (shown until Morpho returns the vault's name), `symbol` (asset label, such as `USDC`), `vaultSymbol` (share token), `type`.
 
-**Curator:** `curator/lib/config/vaults.ts`, in `vaultAddresses`: `address`, `name`, `assetSymbol`, `type`. For an asset other than USDC, USDT, DAI, WETH or a BTC token, also set `assetDecimals`.
+**Curator:** `curator/src/lib/config/vaults.ts`, in `vaultAddresses`: `address`, `name`, `assetSymbol`, `type`. For an asset other than USDC, USDT, DAI, WETH or a BTC token, also set `assetDecimals`.
 
 Any token Morpho indexes works. A new vault appears once Morpho has indexed it, usually within minutes of its first transaction.
 
-**Safes:** replace the placeholder addresses in `curator/lib/safe/config.ts` with your Safes on Base. Leave a placeholder for a role you don't use.
+Vault writes in the curator are signed by the connected wallet. That wallet must hold the on-chain role for the action. There is no multisig Safe setup.
 
 ## 2. Make it yours
 
@@ -20,7 +20,7 @@ Any token Morpho indexes works. A new vault appears once Morpho has indexed it, 
 
 ## 3. Run locally
 
-Use Node.js 24. Create an [Alchemy](https://www.alchemy.com/) key for Base and a [Reown](https://dashboard.reown.com/) project ID.
+Use Node.js 26. Create an [Alchemy](https://www.alchemy.com/) key for Base and a [Reown](https://dashboard.reown.com/) project ID.
 
 ```bash
 cp app/.env.example app/.env.local
@@ -59,6 +59,5 @@ Import this repo into [Vercel](https://vercel.com/) twice: one project with Root
 | `ALCHEMY_API_KEY` | Server Alchemy key (can be the same; a separate one is safer) |
 | `NEXT_PUBLIC_WALLETCONNECT_PROJECT_ID` | Your Reown project ID |
 | `NEXT_PUBLIC_APP_URL` | `https://curator.yourdomain.com` (Vercel only) |
-| `NEXT_PUBLIC_SAFE_API_KEY` | Optional [Safe](https://developer.safe.global) key, to share proposals between owners |
 
 Never commit `.env.local`.

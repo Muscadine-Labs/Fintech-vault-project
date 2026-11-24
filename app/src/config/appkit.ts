@@ -30,9 +30,10 @@ const appKit = createAppKit({
   defaultAccountTypes: { eip155: 'eoa' },
   enableEIP6963: true,
   enableInjected: true,
+  // On: our lazy Coinbase connector (wagmi config) has id `coinbaseWallet`, so AppKit
+  // lists it and does not add its own eager one.
   enableCoinbase: true,
   enableBaseAccount: true,
-  enableWalletConnect: true,
   enableWallets: true,
   allWallets: 'SHOW',
   featuredWalletIds: [
@@ -42,7 +43,8 @@ const appKit = createAppKit({
     WALLET_IDS.phantom,
   ],
   features: {
-    // Off: the privacy pages promise no analytics, and this would send usage data to Reown.
+    // Off: optional usage analytics. AppKit still sends its mandatory INITIALIZE and
+    // CONNECT_SUCCESS events and wallet-list impressions to Reown whatever this says.
     analytics: false,
     email: false,
     socials: false,
@@ -58,9 +60,15 @@ const appKit = createAppKit({
     '--apkt-accent': 'var(--primary)',
     '--apkt-border-radius-master': '4px',
     '--apkt-z-index': 100000,
+    // `inherit`: the modal is mounted under <body>, so it uses our self-hosted Figtree. A
+    // var(--font-…) value would not work here (AppKit declares it on :root, where next/font's
+    // variable is undefined). Any custom value also stops AppKit preloading its own fonts
+    // from fonts.reown.com on every page load (an IP-visible third-party request).
+    '--apkt-font-family': 'inherit',
     '--w3m-accent': 'var(--primary)',
     '--w3m-border-radius-master': '4px',
     '--w3m-z-index': 100000,
+    '--w3m-font-family': 'inherit',
   },
 })
 

@@ -1,5 +1,6 @@
 import { cookieStorage, createStorage, http, fallback } from 'wagmi'
 import { WagmiAdapter } from '@reown/appkit-adapter-wagmi'
+import { lazyBaseAccount, lazyCoinbaseWallet } from '@/lib/lazy-connectors'
 import { base } from '@reown/appkit/networks'
 import type { AppKitNetwork } from '@reown/appkit/networks'
 import { getAppUrl } from '@/lib/app-url'
@@ -43,6 +44,21 @@ export const wagmiAdapter = new WagmiAdapter({
   ssr: true,
   projectId,
   networks,
+  // Registered here so AppKit skips its default Base Account and Coinbase connectors.
+  // AppKit's Base Account SDK sends telemetry to Coinbase unless told not to. Both are
+  // lazy: they stay out of the mount-time reconnect until someone uses them
+  // (lazy-connectors.ts), so neither SDK loads on every page.
+  connectors: [
+    lazyBaseAccount({
+      appName: APP_NAME,
+      appLogoUrl: `${appUrl}/favicon.svg`,
+      preference: { telemetry: false },
+    }),
+    lazyCoinbaseWallet({
+      appName: APP_NAME,
+      appLogoUrl: `${appUrl}/favicon.svg`,
+    }),
+  ],
   transports: {
     // JSON-RPC batching: parallel reads made in the same tick (force-withdraw planner, deposit
     // caps, position reads) go out as one HTTP request to Alchemy instead of one each.

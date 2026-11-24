@@ -10,7 +10,7 @@ Edit `src/lib/vaults.ts`. For each vault you want in the app, set:
 - `name` — fallback until Morpho returns the on-chain name
 - `type` — any group label you want, such as `Core`
 
-You do not need Prime or Frontier. Delete example rows you are not using, and add a row for each vault you are. Use the same addresses, names, and types in `curator/lib/config/vaults.ts`. Details are in the repo `USER-GUIDE.md`.
+You do not need Prime or Frontier. Delete example rows you are not using, and add a row for each vault you are. Use the same addresses, names, and types in `curator/src/lib/config/vaults.ts`. Details are in the repo `USER-GUIDE.md`.
 
 ## 2. Favicon
 

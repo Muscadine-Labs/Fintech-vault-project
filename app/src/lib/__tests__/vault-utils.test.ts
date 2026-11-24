@@ -3,8 +3,10 @@ import {
   findVaultByAddress,
   getAllRegistryVaults,
   preferredVaultName,
+  sortVaultsForDisplay,
   vaultAddressPlaceholderName,
 } from '@/lib/vault-utils';
+import type { Vault } from '@/types/vault';
 
 const GROVE_USDC = '0xbeef0786756810478b88982de00f3cd7fdb8e7c7';
 const GAUNTLET_PRIME = '0x050ce30b927da55177a4914ec73480238bad56f0';
@@ -35,5 +37,22 @@ describe('preferredVaultName', () => {
   });
   it('uses the placeholder only when nothing else has a name', () => {
     expect(preferredVaultName(undefined, '', address)).toBe(vaultAddressPlaceholderName(address));
+  });
+});
+
+describe('sortVaultsForDisplay', () => {
+  // Morpho has no name for some external vaults; one in the list used to crash the dashboard.
+  it('does not throw when a vault has no name', () => {
+    const named = { address: GAUNTLET_PRIME, name: 'USDC Prime', symbol: 'USDC', chainId: 8453 } as Vault;
+    const nameless = { address: GROVE_USDC, symbol: 'USDC', chainId: 8453 } as unknown as Vault;
+    const sorted = sortVaultsForDisplay([named, nameless], [], () => 0);
+    expect(sorted.map((v) => v.address)).toEqual([GROVE_USDC, GAUNTLET_PRIME]);
+  });
+});
+
+describe('preferredVaultName for an unnamed external vault', () => {
+  it('falls back to the address placeholder', () => {
+    const address = '0x6694eAE513FEb17b2483b2f73FA9eA826CF1f5dF';
+    expect(preferredVaultName('', undefined, address)).toBe(vaultAddressPlaceholderName(address));
   });
 });

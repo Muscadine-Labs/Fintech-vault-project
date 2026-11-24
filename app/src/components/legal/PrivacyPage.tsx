@@ -13,7 +13,7 @@ const PrivacyPage: React.FC = () => {
           <h1 className="text-4xl font-light text-[var(--foreground)] mb-4 font-serif border-b-2 border-[var(--border)] pb-4">
             Privacy Policy
           </h1>
-          <p className="text-[var(--foreground-secondary)] italic mb-8">Last updated: November 2026</p>
+          <p className="text-[var(--foreground-secondary)] italic mb-8">Last updated: January 2027</p>
 
           <div className="bg-[var(--surface)] border border-[var(--border)] p-6 mb-8 rounded-sm">
             <p className="text-[var(--foreground)]">
@@ -26,7 +26,7 @@ const PrivacyPage: React.FC = () => {
           <section className="mb-8">
             <h2 className={SECTION_HEADING}>1. What we see</h2>
             <ul className={LIST}>
-              <li><strong>No analytics:</strong> the app uses no analytics, tracking pixels or advertising cookies, and turns off the wallet-connect analytics.</li>
+              <li><strong>No analytics:</strong> the app uses no analytics, tracking pixels or advertising cookies, and turns off Reown&apos;s optional wallet-connect analytics (see section 2 for the connection events Reown always receives).</li>
               <li><strong>Server logs:</strong> our hosting provider (Vercel) keeps standard request logs, such as IP address, browser and time, for a short period.</li>
               <li><strong>Wallet address:</strong> when you connect a wallet, the app reads that public address&apos;s balances and vault positions. We do not tie it to your name or store it in a database.</li>
               <li><strong>Email:</strong> if you email us, we keep your message and address to reply.</li>
@@ -36,11 +36,12 @@ const PrivacyPage: React.FC = () => {
           <section className="mb-8">
             <h2 className={SECTION_HEADING}>2. Third parties the app talks to</h2>
             <p className={BODY}>
-              To show balances and send transactions, the app calls outside services, which can see your IP address
-              and the wallet address being looked up, under their own privacy policies:
+              To show balances and send transactions, the app calls outside services, under their own privacy
+              policies. Each can see the wallet address being looked up and, for calls made from your browser, your IP
+              address:
             </p>
             <ul className={LIST}>
-              <li>Your wallet and Reown / WalletConnect, which connect it</li>
+              <li>Your wallet and Reown / WalletConnect, which connect it. Reown also receives basic connection events (the wallet list opening and a successful connect) that cannot be turned off.</li>
               <li>Alchemy and other Base RPC providers, for on-chain reads and sending transactions</li>
               <li>Morpho&apos;s API, for vault data, positions and token prices. The app&apos;s server makes these calls, so Morpho sees the wallet address but not your IP address.</li>
               <li>Morpho&apos;s image server (cdn.morpho.org), for token logos the app does not bundle</li>

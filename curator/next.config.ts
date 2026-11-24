@@ -15,8 +15,8 @@ const nextConfig: NextConfig = {
   // Turbopack doesn't support false aliases yet
   turbopack: {
     resolveAlias: {
-      '../build/polyfills/polyfill-module': './lib/modern-polyfill.js',
-      'next/dist/build/polyfills/polyfill-module': './lib/modern-polyfill.js',
+      '../build/polyfills/polyfill-module': './src/lib/modern-polyfill.js',
+      'next/dist/build/polyfills/polyfill-module': './src/lib/modern-polyfill.js',
     },
   },
   webpack: (config) => {
@@ -56,8 +56,8 @@ const nextConfig: NextConfig = {
       "lokijs",
       "encoding",
     ];
-    // viem → ox (Tempo chain) via @safe-global/api-kit: dynamic require in a dependency.
-    // Harmless for our Safe proposer route; silences "Compiled with warnings" on Vercel.
+    // ox's Tempo chain module (pulled in through viem) has a dynamic require; harmless.
+    // Silences "Compiled with warnings" on Vercel.
     config.ignoreWarnings = [
       ...(Array.isArray(config.ignoreWarnings) ? config.ignoreWarnings : []),
       {
@@ -76,36 +76,7 @@ const nextConfig: NextConfig = {
   },
   // Security headers
   async headers() {
-    const safeAppCorsHeaders = [
-      {
-        key: 'Access-Control-Allow-Origin',
-        value: '*',
-      },
-      {
-        key: 'Access-Control-Allow-Methods',
-        value: 'GET',
-      },
-      {
-        key: 'Access-Control-Allow-Headers',
-        value: 'X-Requested-With, content-type, Authorization',
-      },
-    ];
-
     return [
-      {
-        source: '/manifest.json',
-        headers: [
-          ...safeAppCorsHeaders,
-          {
-            key: 'Content-Security-Policy',
-            value: "frame-ancestors 'self' https://app.safe.global",
-          },
-        ],
-      },
-      {
-        source: '/favicon.svg',
-        headers: safeAppCorsHeaders,
-      },
       {
         source: '/:path*',
         headers: [
@@ -118,8 +89,9 @@ const nextConfig: NextConfig = {
             value: 'max-age=63072000',
           },
           {
+            // Admin tool: nothing needs to embed it, so no framing.
             key: 'Content-Security-Policy',
-            value: "frame-ancestors 'self' https://app.safe.global",
+            value: "frame-ancestors 'none'",
           },
           {
             key: 'X-Content-Type-Options',
@@ -150,10 +122,14 @@ const nextConfig: NextConfig = {
   async redirects() {
     return [
       { source: '/curator/markets', destination: '/markets', permanent: true },
-      { source: '/curator/market/blue/:id', destination: '/market/blue/:id', permanent: true },
-      { source: '/market/midnight/:id', destination: '/midnight/:id', permanent: true },
-      { source: '/curator/safe', destination: '/safe/allocator', permanent: true },
-      { source: '/curator/safe/:role', destination: '/safe/:role', permanent: true },
+      { source: '/curator/market/blue/:id', destination: '/markets/blue/:id', permanent: true },
+      { source: '/market/blue/:id', destination: '/markets/blue/:id', permanent: true },
+      { source: '/market/midnight/:id', destination: '/markets/midnight/:id', permanent: true },
+      { source: '/midnight/:id', destination: '/markets/midnight/:id', permanent: true },
+      { source: '/curator/safe', destination: '/curator', permanent: true },
+      { source: '/curator/safe/:path*', destination: '/curator', permanent: true },
+      { source: '/safe', destination: '/curator', permanent: true },
+      { source: '/safe/:path*', destination: '/curator', permanent: true },
       { source: '/curator/morpho', destination: '/curator', permanent: true },
       { source: '/morpho', destination: '/curator', permanent: true },
       { source: '/vault/v2/:address', destination: '/vault/:address', permanent: true },

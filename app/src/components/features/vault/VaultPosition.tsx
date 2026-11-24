@@ -1,7 +1,7 @@
 'use client';
 
 import { useState, useEffect, useMemo, useCallback, useRef } from 'react';
-import { useAccount, useReadContract } from 'wagmi';
+import { useConnection, useReadContract } from 'wagmi';
 import { MorphoVaultData } from '@/types/vault';
 import {
   formatCurrency,
@@ -135,7 +135,7 @@ export default function VaultPosition({
   onTransactTabChange,
   canDeposit,
 }: VaultPositionProps) {
-  const { address, isConnected } = useAccount();
+  const { address, isConnected } = useConnection();
   const { priceForVault } = usePrices();
   const vaultAssetPrice = priceForVault(vaultData.address) ?? 0;
   const { error: showErrorToast } = useToast();

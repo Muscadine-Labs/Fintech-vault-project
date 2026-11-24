@@ -16,8 +16,8 @@ vault mechanics, contract wiring, or the data flow.
 - **Review `TODO.md` at the start of every session.** It is the running task list
   for the repo. Work the "Today" section top-to-bottom unless the user
   directs otherwise; leave "Later" items alone unless asked.
-- **Closed-loop brain:** [`docs/brain/README.md`](docs/brain/README.md) — session
-  protocol, changelog, Morpho MCP. Append `docs/brain/CHANGELOG.md` when you
+- **Closed-loop brain:** [`docs/README.md`](docs/README.md) — session
+  protocol, changelog, Morpho MCP. Append `docs/CHANGELOG.md` when you
   finish substantive work.
 - **Before pushing:** run `npm run lint` and `npm run build` and make sure all pass.
 - **Git, branches and PRs:** AI assistants may commit, create branches, push those branches, and open pull requests without asking first. **Never push to, commit directly on, force-push, or merge into `main`** — every change reaches `main` only through a PR that the user merges. Work on a feature branch (create one if you are on `main`).
@@ -32,7 +32,6 @@ Copy `.env.example` → `.env.local`. See that file for the full list.
 | `ALCHEMY_API_KEY` | Recommended | Server Base RPC |
 | `NEXT_PUBLIC_ALCHEMY_API_KEY` | Recommended | Client Base RPC |
 | `NEXT_PUBLIC_APP_URL` | No | If unset: `http://localhost:3001` locally, the Vercel production domain (`VERCEL_PROJECT_PRODUCTION_URL`) on Vercel |
-| `NEXT_PUBLIC_SAFE_API_KEY` | No | Safe Transaction Service (proposals, sync, history, governance activity) |
 
 ---
 
@@ -44,11 +43,11 @@ managing and reporting on Morpho-style vaults on Base (chainId `8453`). It cover
 - Vault overview, TVL, revenue and fee charts
 - Per-vault pages for **Morpho V2** vaults (risk, governance, caps, allocation,
   sentinel) plus **Curator Morpho Markets** browser/detail
-- Curator tools (EIP-7702 delegation, Safe, frontend, morpho)
+- Curator tools (links to Morpho curator, oracles, and account dashboards)
 
 ### Tech stack
 
-- **Framework**: Next.js App Router (`app/`)
+- **Framework**: Next.js App Router (`src/app/`)
 - **Language**: TypeScript (strict)
 - **Styling**: Tailwind CSS + shadcn-style components in `components/ui/*`
 - **Data**: React Query (`@tanstack/react-query`) for client caches
@@ -57,11 +56,28 @@ managing and reporting on Morpho-style vaults on Base (chainId `8453`). It cover
   `lib/wallet/appkit.ts`, custom connect button in topbar). Featured wallets
   (in order): **Rabby, MetaMask, Base, Phantom** — plus WalletConnect and
   injected EIP-6963. No server-side private keys for vault writes.
+- **Privacy**: no optional analytics or telemetry. AppKit `features.analytics:
+  false` (Reown still receives its mandatory `INITIALIZE` / `CONNECT_SUCCESS`
+  events and wallet-list impressions). Base Account connector sets
+  `telemetry: false`. It and our Coinbase Wallet connector (id renamed to
+  `coinbaseWallet` so AppKit lists it and adds no second one) are lazy
+  (`lib/wallet/lazy-connectors.ts`: kept out of wagmi's mount-time reconnect, so
+  each SDK and its COOP `HEAD` request run only once it is used; a disconnect, from
+  the app or the wallet, is remembered, and cleared only after a successful connect).
+  `preloadWalletSdks()` fetches both SDK chunks when Connect is opened
+  (`ConnectWalletButton`, `TransactionButton`; same-origin, starts no SDK) so the
+  first connect does not import between the click and the wallet popup. `@coinbase/wallet-sdk` is pinned at 4.4
+  (no telemetry) and the `@reown/appkit-utils` override dedupes AppKit's nested SDK
+  copies onto ours.
+  npm scripts set `NEXT_TELEMETRY_DISABLED=1`. AppKit's font variables are
+  `inherit` (the modal uses the page font; a `var(--font-…)` value is undefined on
+  `:root` where AppKit declares it), which also stops it loading fonts from
+  `fonts.reown.com` on every page. Do not add analytics.
 - **GraphQL**: Morpho Blue API (`https://api.morpho.org/graphql`) via
   `graphql-request` in `lib/morpho/graphql-client.ts`. **Vault list, detail,
   history, risk, and protocol stats BFF routes use this client directly** — not
   the Morpho SDK runtime.
-- **Onchain writes (allocator / sentinel / Safe UI)**: ABIs in
+- **Onchain writes (allocator / sentinel / curator wallet)**: ABIs in
   `lib/onchain/abis.ts` + `vault-writes.ts`. Blue create-market, vault
   deposit/withdraw, gates, and deploy scripts are not in this dashboard.
 - **Auth**: not in this student copy (`lib/auth/*` was removed on purpose); the dashboard has no login.
@@ -71,27 +87,25 @@ managing and reporting on Morpho-style vaults on Base (chainId `8453`). It cover
 ## 2. Repository Layout
 
 ```
-app/
+src/app/
   api/                 Next.js route handlers (BFF for Morpho + onchain data)
     vaults/            GET /api/vaults, /api/vaults/[id], history, holders, …
     vaults/[id]/       On-chain vault endpoints (risk, governance, pending)
     markets/           Morpho Blue markets browser + detail BFF
     protocol-stats/    Aggregate TVL / revenue
-    safe/[address]/    GET /api/safe/[address]/info (owners, threshold, nonce, ETH)
   markets/             Morpho Markets browser (`/markets`)
-  market/blue/[id]/    Blue market detail
-  safe/                Multisig Safe workspace
+    blue/              Blue list (`/markets/blue`) and detail (`/markets/blue/[id]`)
+    midnight/          Midnight list (`/markets/midnight`) and detail (`/markets/midnight/[id]`)
   curator/             Curator tools hub (`/curator`)
   vault/[address]/     Vault detail page (Morpho V2)
 
-components/
+src/components/
   morpho/              VaultV2Allocations, VaultV2Caps, VaultV2Sentinel,
                        TxPreviewDialog, AllocationListView, …
-  safe/                SafeOverviewPanel, SafeTransactionQueue, workspace link
   layout/              AppShell, Sidebar, Topbar
   ui/                  Primitive components (button, card, input, table, ...)
 
-lib/
+src/lib/
   auth/                Curator auth context + server helpers
   config/vaults.ts     Tracked vault addresses (V1 + V2)
   data/                api-fetch, query-config (30s refetch)
@@ -99,8 +113,7 @@ lib/
   format/number.ts     Central number/BigInt formatting helpers
   hooks/               React Query hooks for vault data
   morpho/              GraphQL queries, tx-preview, cap-decrease-input, …
-  safe/                Allocator and Sentinel Safe config, Protocol Kit client,
-                       localStorage pending queue, vault calldata builders
+  vault/               Wallet role checks for vault writes
   onchain/
     abis.ts            Vault V2 ABI only
     vault-writes.ts    V2 write config builders
@@ -112,7 +125,7 @@ lib/
   utils/               Logger, rate limit, env validation, error handler
   wallet/              Wagmi + Reown AppKit (`WagmiAdapter`, `createAppKit`), indexeddb polyfill
 
-.env / .env.local      Public env vars: WalletConnect, Alchemy RPC, app URL, Safe API key.
+.env / .env.local      Public env vars: WalletConnect, Alchemy RPC, app URL.
                        Vault addresses live in lib/config/vaults.ts.
 ```
 
@@ -310,9 +323,9 @@ MetaMorpho child).
 
 `GET /api/vaults` and `GET /api/vaults/[id]` query **Morpho V2** vaults from
 `lib/config/vaults.ts` only. There is no V1 vault list batch and no
-`app/vault/v1/…` detail route.
+`src/app/vault/v1/…` detail route.
 
-### 4.2 V2 (`app/vault/[address]/page.tsx`)
+### 4.2 V2 (`src/app/vault/[address]/page.tsx`)
 
 **Rendering** — the vault page is `'use client'` and loads all tab data via React
 Query (`useVaultV2Complete` → BFF + on-chain hooks). Keep the `[address]` segment
@@ -350,23 +363,11 @@ grades; Sentinel holds emergency actions at the bottom.
    number is unknown, never `BigInt`-ed mid-render).
    **Activity** (`VaultActivityFeed`, `GET /api/vaults/[id]/activity`,
    `lib/morpho/vault-activity(.server).ts`) merges Morpho
-   `vaultV2AllocationTransactions` (signed `change`, `sender`), pending
-   `pendingConfigs` submits, and executed governance calls from the Owner /
-   Curator / Allocator / Sentinel Safes' Transaction Service history (direct
-   vault calls, vault `multicall`, canonical MultiSend batches; allocations
-   skipped there because Morpho indexes them). Morpho does **not** index
-   governance history; without `NEXT_PUBLIC_SAFE_API_KEY` the feed says so and
-   shows allocations + pending only. A partial Safe read is not cached. Each
-   Safe's newest 100 executed txs are cached **per Safe** (shared across
-   vaults); when a page is full the response carries
-   `governanceHistorySince` and the feed says older calls may be missing.
-   Executed submits reconcile with `pendingConfigs` **per call** (tx hash +
-   submitted calldata, `matchPendingConfig`) — a batch can submit several
-   configs with different timelocks next to calls that have none. A pending
-   config with no `validAt` is never Executable (`pendingStatus` → unknown);
-   badges tick every 30s. `vault-activity` refetches after Safe execute.
-   `loadSafeHistory` (per-Safe cache) is also used by the bots activity route
-   upstream (removed from this student copy).
+   `vaultV2AllocationTransactions` (signed `change`, `sender`) with pending
+   `pendingConfigs` submits. Morpho does not index executed governance, and
+   this app no longer reads it from a Safe history. A pending config with no
+   `validAt` is never Executable (`pendingStatus` → unknown); badges tick
+   every 30s.
    Filters: type and role (`activityRoles` — an address can hold several).
    Allocation targets resolve from cap ids (`keccak256(resolveCapIdData)`), most
    specific id first. Fetches only when the card is opened.
@@ -383,7 +384,7 @@ grades; Sentinel holds emergency actions at the bottom.
    Public Allocator absolute cap (including a vault cap of 0), and allow
    deallocation. Calls go to the Public Allocator contract (`setAbsoluteCap`,
    `setCanPullFromMarket`, `setCanPullFromIdle`, or one `multicall`), from the
-   allocator wallet or the Allocator Safe, and apply immediately. Vault caps
+   connected allocator wallet, and apply immediately. Vault caps
    still bind the move. Penalty stays read-only here.
 5. **Timelocks** — `VaultV2Timelocks.tsx`: pending actions (accept / revoke via
    `VaultV2Pending`) above the read-only delay list.
@@ -491,7 +492,7 @@ vault data from components.
 
 ### 4.3.1 Vault list API and sidebar
 
-`GET /api/vaults` (`app/api/vaults/route.ts`) fans out per-address V2 (`vaultV2ByAddress`) Morpho GraphQL queries. Each row is enriched
+`GET /api/vaults` (`src/app/api/vaults/route.ts`) fans out per-address V2 (`vaultV2ByAddress`) Morpho GraphQL queries. Each row is enriched
 from `lib/config/vaults.ts` with:
 
 - `id` — same as vault `address` (for legacy UI keys)
@@ -513,12 +514,12 @@ ops are `/vault/[address]/*`. User deposit and withdraw are not in this dashboar
 
 The app is Base-only: `CURATOR_MARKET_NETWORKS` / `SIDEBAR_NETWORKS` and the
 wagmi config hold Base alone. The "Wallet not on Base" hint reads the wallet's
-real chain from `useAccount().chainId` — `useChainId()` only reports configured
-chains, so with Base-only config it stays 8453 and the hint would never show. The same applies to writes: `useVaultWrite` and `useSafeFunding` compare `useAccount().chainId` to Base before `switchChainAsync`, or a wallet left on Ethereum skips the switch and viem rejects the write.
+real chain from `useConnection().chainId` — `useChainId()` only reports configured
+chains, so with Base-only config it stays 8453 and the hint would never show. The same applies to writes: `useVaultWrite` compares `useConnection().chainId` to Base before `switchChainAsync`, or a wallet left on Ethereum skips the switch and viem rejects the write.
 
 ### 4.4 Vault overview, liquidity, and history (Morpho GraphQL)
 
-**Overview** — `VaultOverviewPanel` + `GET /api/vaults/[id]` (`app/api/vaults/[id]/route.ts`).
+**Overview** — `VaultOverviewPanel` + `GET /api/vaults/[id]` (`src/app/api/vaults/[id]/route.ts`).
 
 - **Metrics card** — token amount **primary**, USD **secondary** via
   `TokenUsdValue` (`components/morpho/TokenUsdValue.tsx`): Total Assets, Liquidity,
@@ -534,7 +535,7 @@ chains, so with Base-only config it stays 8453 and the hint would never show. Th
 - **Fees** — performance and management fee rates and recipients. **Claim fees**
   (`ClaimFeesButton`) quotes `accrueInterestView` + `previewRedeem` and sends
   `v2WriteConfigs.accrueInterest`, which mints the pending fees as vault shares
-  to those recipients. Safe rows holding that call decode as **Claim fees**.
+  to those recipients. Anyone connected may send it.
 - Analytics object from `lib/morpho/vault-analytics.ts` (`buildVaultAnalytics`).
 
 **History chart** — `VaultOverviewHistoryChart` + `GET /api/vaults/[id]/history`
@@ -588,10 +589,10 @@ V1 detail.
 | `whitelisted` on `Vault` / `VaultV2` | `listed` | List + detail queries; map to UI `status` (`listed` → active) |
 | `uniqueKey` on `Market` | `marketId` | All market GraphQL selections; app JSON uses `marketKey` (not `uniqueKey`) |
 | `Market.oracleAddress` | `oracle.address` | Risk, governance, curator-markets, fetch-markets-by-id, `blue-market-data.ts` |
-| `Query.transactions` | `vaultV2transactions` | Vault overview snippet in `app/api/vaults/[id]/route.ts` |
+| `Query.transactions` | `vaultV2transactions` | Vault overview snippet in `src/app/api/vaults/[id]/route.ts` |
 | `VaultState.avgApy`, `monthlyNetApy`, `weeklyNetApy`, `dailyApy`, `netApyWithoutRewards`, … | Removed — use `apy`, `netApy`, `avgNetApy`, `netApyExcludingRewards` | V1 detail + list |
 | V2 spot `avgApy` on vault | Use `apy`, `avgNetApy`, `maxApy` | V2 detail + list |
-| `VaultV2Metadata.forumLink` | Removed — query `description` and `image` only | V2 detail (`app/api/vaults/[id]/route.ts`); its absence broke every vault page with "Failed to fetch vault" (502) |
+| `VaultV2Metadata.forumLink` | Removed — query `description` and `image` only | V2 detail (`src/app/api/vaults/[id]/route.ts`); its absence broke every vault page with "Failed to fetch vault" (502) |
 
 **GraphQL client** — `lib/morpho/graphql-client.ts` uses `rawRequest` and logs
 `extensions.warnings` (Morpho deprecation notices) via `lib/utils/logger.ts`.
@@ -616,7 +617,7 @@ Monitor server logs when Morpho schedules field removals.
   `oracle.data.baseFeedOne` on **positions only** (not all four feeds, not on caps);
   cap-only markets rely on on-chain `BASE_FEED_*` fallback. **Do not add**
   `sizeUsd`, `totalLiquidityUsd`, or `supplyAssets` to `market.state` in
-  `app/api/vaults/[id]/risk/route.ts` — it triggers Morpho “Query is too complex”.
+  `src/app/api/vaults/[id]/risk/route.ts` — it triggers Morpho “Query is too complex”.
   Risk UI falls back to `supplyAssetsUsd` / `liquidityAssetsUsd` for USD display.
 
 ### 4.5 Risk management scoring (V1 & V2)
@@ -693,7 +694,7 @@ B+ ≥84, B ≥80, B− ≥77, C+ ≥74, C ≥70, C− ≥65, D ≥60, F &lt;60.
 **External links** — `lib/morpho/morpho-app-links.ts`:
 - Blue market → `morphoMarketHref(marketKey)` → `app.morpho.org/base/market/…`
 - Curator market detail → `curatorBlueMarketHref(marketKey, chainId)` →
-  `/market/blue/{marketKey}?chainId=…`
+  `/markets/blue/{marketKey}?chainId=…`
 
 #### V2 vault risk (Curator)
 
@@ -736,9 +737,9 @@ tab switch, post-tx, and Rebalance (`lib/data/query-config.ts`).
 
 ### 4.7 Curator Morpho Markets browser
 
-**Routes** — `/markets` (list), `/market/blue/[id]?chainId=` (Blue detail), and
-`/midnight/[id]?chainId=` (Midnight detail). Old `/markets/create` and
-`/markets/positions` redirect to `/markets`.
+**Routes** — `/markets` (list), `/markets/blue` and `/markets/blue/[id]?chainId=` (Blue), and
+`/markets/midnight` and `/markets/midnight/[id]?chainId=` (Midnight). Old `/market/blue/[id]`,
+`/midnight/[id]`, `/markets/create`, and `/markets/positions` redirect into this tree.
 **Product toggle** on Browse: **All / Blue — variable rate / Midnight — fixed rate**
 (default All, listed-only). Blue is variable rate
 ([app.morpho.org/variable](https://app.morpho.org/variable),
@@ -829,7 +830,7 @@ Detail KPIs: filled size (`total_units`), lender credit and borrower debt
 (summed from `/positions`), open lend/borrow offers, best lend/borrow rates, per-collateral
 LLTV / liquidation cursor / oracle panel (price, freshness, Chainlink feeds on Base),
 asks & bids.
-Curator top-nav area holds Curator tools (`/curator`) + Multisig Safe.
+Curator top-nav area holds Curator tools (`/curator`). `/safe` redirects there.
 
 **Wallet positions / lend-borrow** — not in this dashboard. Blue market detail
 **Interact** links the Morpho app; Midnight uses **Trade on Morpho**. Writes:
@@ -961,7 +962,7 @@ oracles use the same panel.
 link to Morpho app. Invalid `?chainId=` falls back to Base (`parseCuratorMarketChainId`).
 
 **Allocation tab links** — Blue market row names link to
-`curatorBlueMarketHref(marketKey, chainId)` (in-app `/market/blue/…`), not the
+`curatorBlueMarketHref(marketKey, chainId)` (in-app `/markets/blue/…`), not the
 Morpho app directly.
 
 **Vault Risk tab links** — `MarketRiskDetailCard` market names link to
@@ -1161,13 +1162,11 @@ components.
   because any caller can send them.
 - Write UI (reallocate, caps, etc.) is gated on both wallet connection and
   curator role.
-- **All on-chain writes** (V1/V2 reallocate, caps, etc.) go through
-  **Reown AppKit → connected wallet** (`useVaultWrite` / wagmi `writeContract`).
+- **All on-chain writes** (reallocate, caps, sentinel, fees, pending accept/revoke)
+  go through **Reown AppKit → connected wallet** (`useVaultWrite` / wagmi
+  `writeContract`). The preview dialog confirms only when that wallet holds the
+  required role (`lib/vault/write-destination.ts`). There is no Safe queue.
   Do not add server-side private keys for allocation flows.
-- **Multisig Safe writes** — when a vault's on-chain allocator/sentinel is a
-  role Safe (`lib/safe/config.ts`), queue proposals from Allocation /
-  Sentinel preview dialogs; owners sign EIP-712 on `/safe/[role]`.
-  Direct wallet confirm remains for EOA role holders only (`lib/safe/vault-role-match.ts`).
 - Wallet connect lives in the **topbar** (`ConnectWalletButton` / Reown
   AppKit). Featured wallets are configured in `lib/wallet/appkit.ts`. The app
   and the wallet stay on Base. The account sheet labels the network; it does
@@ -1201,7 +1200,7 @@ components.
 - For market caps, confirm `cap.adapterAddress` from governance and full market
   params (oracle, irm, lltv) from the risk API are used in
   `encodeMarketCapIdData`.
-- Deallocate Blue markets: `data = encodeMarketParamsData(market)`.
+- Deallocate Blue markets: `data = encodeMarketParamsData(market)`. `data` is never `0x` for a Blue market, and the call needs the booked `allocation(id)`.
 - New absolute/relative cap on decrease must be **≤ current** on-chain cap.
 - Relative cap input is human **percent** (0–100); convert to WAD with
   `parseUnits(pct, 16)` — exact. `Math.round(pct * 1e16)` is a few wei off for
@@ -1333,7 +1332,7 @@ npm run build
 npm test               # vitest run
 ```
 
-Node **24.22.3** (`engines` in `package.json`).
+Node **26.x** (`engines` in `package.json`; Vercel runs 26.x).
 
 ### Dependency pins
 
@@ -1342,12 +1341,26 @@ Ranges in `package.json` match the installed versions. Do not take these majors:
 - **ESLint 9** — `eslint@^9.39.5` and `@eslint/js@^9.39.5`. Do **not** upgrade to
   ESLint 10 while using `eslint-config-next`; transitive plugins (`eslint-plugin-react`,
   etc.) still break on removed ESLint 10 APIs.
-- **wagmi 2** — `wagmi@^2.19.5`. `@reown/appkit-adapter-wagmi` peers `wagmi@2`.
-  Do not upgrade to wagmi 3 until AppKit supports it.
+- **wagmi 3 / AppKit 2** — `wagmi@3.7.11` (exact: it pins `@wagmi/core` / `@wagmi/connectors` exactly, so a looser range would let `npm update` mismatch them against the overrides), `@reown/appkit*@^2.0.0`,
+  `@wagmi/connectors@8.2.4` (direct, `$` override) and `@wagmi/core` 3.6.9
+  (override). AppKit 2 peers wagmi / `@wagmi/core` ≥3 and `@wagmi/connectors`
+  ≥8, so bump them together. Connector SDKs are optional peers in connectors 8:
+  `@base-org/account` (2.6.0) and `@coinbase/wallet-sdk` (4.4.0) are exact direct
+  deps (the privacy claims depend on those versions) because
+  `lib/wallet/config.ts` registers those connectors. Import connectors from
+  their subpaths (`@wagmi/connectors/baseAccount`, `/coinbaseWallet`), never the
+  `wagmi/connectors` barrel: the barrel pulls in MetaMask / WalletConnect /
+  Tempo connectors whose SDKs are not installed, and webpack warns on every
+  build. wagmi 3 API names: `useConnection` (not `useAccount`), `useConnectors` (not `useConnect().connectors`), and `mutate` / `mutateAsync` on mutation hooks (`useConnect`, `useSwitchChain`, `useWriteContract`, `useSendTransaction`) instead of `connectAsync` / `switchChainAsync` / `writeContractAsync` / `sendTransactionAsync`; the old names are deprecated aliases. `useBalance` has no `formatted` field (use viem `formatUnits(value, decimals)`).
+- **`npm ls` noise** — `@x402/*` 2.27.0 (pinned by `@reown/appkit-utils`) shows as
+  invalid for `@coinbase/cdp-sdk`'s optional `^2.29.0` peer. Never bundled
+  (`next.config.ts` aliases the client paths); `.npmrc` `legacy-peer-deps=true`
+  keeps `npm ci` passing. Overrides for packages no longer in the tree (`uuid`,
+  `lodash`, `hono`, `socket.io-parser`, `decode-uri-component`, `qr`) were removed.
 - **TypeScript 6** — installed `typescript-eslint` peers `typescript >=4.8.4 <6.1.0`;
   stay on `typescript@^6.0.3` (not 7).
-- **ox 0.14 / Vitest 5** — `ox@^0.14.60`, `vitest@^5.1.0`, with `vite@^8.3.5` because Vitest 5 imports Vite directly. ox 1 stays off.
-- **`sharp` override** — `>=0.35.4`, matching Next’s optional `sharp@^0.35.4`
+- **ox 0.14 / Vitest 5** — `ox@0.14.67` (exact: the version viem 2.58.6 depends on; bump both together — `viem` is pinned exact too, so `npm update` cannot pull a viem that needs a newer ox), `vitest@^5.1.1`, with `vite@^8.3.8` because Vitest 5 imports Vite directly. ox 1 stays off.
+- **`sharp` override** — `>=0.35.5`, at or above Next’s optional `sharp@^0.35.4`
   (libvips CVEs, GHSA-f88m-g3jw-g9cj).
 - **`eslint.config.mjs`** — official Next.js flat config:
   `eslint-config-next/core-web-vitals` + `eslint-config-next/typescript` (lints all
@@ -1360,7 +1373,7 @@ Ranges in `package.json` match the installed versions. Do not take these majors:
 
 - Keep components typed. Prefer `ReadonlyArray<T>` for inputs and explicit
   `interface` for props.
-- Server-side code goes in `app/api/*` route handlers or `lib/**/*.server.ts`
+- Server-side code goes in `src/app/api/*` route handlers or `lib/**/*.server.ts`
   modules; never import `wagmi`/viem-wallet code in server files.
 - Use `lib/format/number.ts` helpers for all numeric display.
 - Don't hardcode vault addresses in components — always import from
@@ -1387,15 +1400,15 @@ Ranges in `package.json` match the installed versions. Do not take these majors:
 | V2 cap idData encoding           | `lib/morpho/v2-id-data.ts` (`resolveCapIdData`, …)       |
 | V2 cap display helpers           | `lib/morpho/v2-cap-format.ts`                            |
 | Market risk scoring (shared)     | `lib/morpho/compute-blue-market-risk.ts`, `lib/morpho/irm-utils.ts`, `lib/morpho/oracle-utils.ts` |
-| V2 risk API + UI                 | `app/api/vaults/[id]/risk/route.ts`, `VaultRiskV2.tsx`, `MarketRiskDetailCard.tsx` |
+| V2 risk API + UI                 | `src/app/api/vaults/[id]/risk/route.ts`, `VaultRiskV2.tsx`, `MarketRiskDetailCard.tsx` |
 | Morpho app deep links            | `lib/morpho/morpho-app-links.ts`                         |
 | V2 pending UI                    | `components/morpho/VaultV2Pending.tsx`                    |
-| V2 vault page (tabs)             | `app/vault/[address]/page.tsx`                            |
+| V2 vault page (tabs)             | `src/app/vault/[address]/page.tsx`                            |
 | Blue market types + normalize      | `lib/morpho/blue-market-data.ts` (`asBlueMarketData`) |
 | Client fetch + refetch interval  | `lib/data/api-fetch.ts`, `lib/data/query-config.ts`      |
 | BFF cache headers                | `lib/api/response-cache.ts`, `lib/api/server-response-cache.ts` |
 | Governance query key helper      | `vaultV2GovernanceQueryKey` in `lib/hooks/useVaultV2Governance.ts` |
-| Wallet / Reown AppKit config     | `lib/wallet/config.ts`, `lib/wallet/appkit.ts`, `app/providers.tsx`, `components/ConnectWalletButton.tsx` |
+| Wallet / Reown AppKit config     | `lib/wallet/config.ts`, `lib/wallet/appkit.ts`, `src/app/providers.tsx`, `components/ConnectWalletButton.tsx` |
 | Shared filters UI                | `components/morpho/AllocationFilters.tsx`               |
 | Number formatting                | `lib/format/number.ts`                                   |
 | ABIs                             | `lib/onchain/abis.ts` (V2 only)                          |
@@ -1404,19 +1417,19 @@ Ranges in `package.json` match the installed versions. Do not take these majors:
 | Dust recipient UI                | `components/morpho/DustRecipientSelect.tsx`              |
 | Write hook                       | `lib/hooks/useVaultWrite.ts`                             |
 | V2 data hook                     | `lib/hooks/useVaultV2Complete.ts`                        |
-| V2 caps API                      | `app/api/vaults/[id]/governance/route.ts`             |
+| V2 caps API                      | `src/app/api/vaults/[id]/governance/route.ts`             |
 | Vault overview + history chart   | `components/morpho/VaultOverviewPanel.tsx`, `VaultOverviewHistoryChart.tsx`, `TokenUsdValue.tsx` |
-| Vault history BFF                | `app/api/vaults/[id]/history/route.ts`, `lib/morpho/vault-history.ts` |
+| Vault history BFF                | `src/app/api/vaults/[id]/history/route.ts`, `lib/morpho/vault-history.ts` |
 | V2 cap market enrichment         | `lib/morpho/fetch-markets-by-id.ts` (`enrichMarketCapParams`, `enrichCollateralCapSymbols`) |
 | Vault overview analytics         | `lib/morpho/vault-analytics.ts`                          |
 | Chart metric / unit filters      | `components/charts/MetricModeFilter.tsx`, `UsdTokenModeFilter.tsx` |
 | Asset decimals + allocation fmt  | `lib/format/asset-decimals.ts`, `allocation-display.ts` |
 | V2 cap helpers                   | `lib/morpho/cap-utils.ts`, `lib/morpho/vault-v2-governance-map.ts` |
-| Vault list API                   | `app/api/vaults/route.ts`, `app/api/vaults/[id]/route.ts`|
+| Vault list API                   | `src/app/api/vaults/route.ts`, `src/app/api/vaults/[id]/route.ts`|
 | Vault history + share price      | `lib/morpho/vault-history.ts`, `useVaultHistory.ts`, `VaultOverviewHistoryChart.tsx` |
 | Sidebar vault sections           | `components/layout/Sidebar.tsx`, `lib/config/vaults.ts` (`getSidebarNavVaults`) |
 | Market id helpers                | `lib/morpho/morpho-app-links.ts` (`marketKeyFromGraphQL`, `curatorBlueMarketHref`, `curatorMidnightMarketHref`, `morphoMidnightMarketHref`) |
-| Midnight markets                 | `lib/morpho/midnight-markets.ts`, `app/midnight/[id]/page.tsx`, `GET /api/markets/midnight`, `GET /api/markets/midnight/[id]` |
+| Midnight markets                 | `lib/morpho/midnight-markets.ts`, `src/app/markets/midnight/[id]/page.tsx`, `GET /api/markets/midnight`, `GET /api/markets/midnight/[id]` |
 | Oracle address from GraphQL      | `lib/morpho/market-oracle-address.ts` (`resolveMarketOracleAddress`) |
 | Explorer address / tx links      | `components/morpho/ExplorerAddressLink.tsx` |
 | Market activity (blue detail)    | `lib/morpho/market-activity.server.ts`, `market-activity-math.ts`, `components/morpho/MarketActivitySections.tsx`, `GET /api/markets/[marketId]/activity` |
@@ -1424,242 +1437,38 @@ Ranges in `package.json` match the installed versions. Do not take these majors:
 | Adapter table rollups            | `lib/morpho/vault-adapter-summary.ts` |
 | Oracle decode + feed registry    | `lib/morpho/oracle-decode.server.ts`, `lib/morpho/chainlink-feed-registry.server.ts`, `lib/morpho/oracle-display.ts` |
 | Morpho GraphQL client + warnings | `lib/morpho/graphql-client.ts` |
-| Curator markets BFF + scoring    | `lib/morpho/curator-markets.ts`, `app/api/markets/` |
-| Markets browser UI               | `components/morpho/CuratorMarketsBrowser.tsx`, `lib/morpho/market-pair-filter.ts`, `app/markets/page.tsx` |
-| Market detail + oracle panel     | Blue: `app/market/blue/[id]/page.tsx`; Midnight: `MidnightMarketView` + `MarketOraclePanel`; `lib/morpho/oracle-price.ts` |
+| Curator markets BFF + scoring    | `lib/morpho/curator-markets.ts`, `src/app/api/markets/` |
+| Markets browser UI               | `components/morpho/CuratorMarketsBrowser.tsx`, `lib/morpho/market-pair-filter.ts`, `src/app/markets/page.tsx` |
+| Market detail + oracle panel     | Blue: `src/app/markets/blue/[id]/page.tsx`; Midnight: `src/app/markets/midnight/[id]/page.tsx`; `lib/morpho/oracle-price.ts` |
 | Create Blue market / vault deposit | not in this dashboard |
-| Amount MAX (Safe send/receive)   | `components/morpho/AmountMaxInput.tsx` |
+| Amount MAX input                 | `components/morpho/AmountMaxInput.tsx` |
 | Nav areas                        | `lib/nav/areas.ts`, `components/layout/Topbar.tsx`, `Sidebar.tsx` |
 | Oracle Portal link               | `MORPHO_ORACLE_PORTAL_URL` in `lib/constants/links.ts` → https://oracles.morpho.dev/ |
-| Brain / session loop             | `docs/brain/`, `.cursor/mcp.json` |
+| Brain / session loop             | `docs/`, `.cursor/mcp.json` |
 | V2 on-chain allocation overlay   | `lib/morpho/overlay-v2-onchain-caps.ts` |
 | V2 tx user resolution            | `lib/morpho/vault-v2-transaction-utils.ts` |
 | Vault addresses                  | `lib/config/vaults.ts`                                   |
 | Theme context + migration        | `lib/theme/ThemeContext.tsx`                             |
 | Theme switcher UI                | `components/ThemeSwitcher.tsx`                           |
-| Global density + theme vars      | `app/globals.css`                                        |
+| Global density + theme vars      | `src/app/globals.css`                                        |
 | Chart time-range filter          | `components/charts/TimeRangeFilter.tsx`                  |
 | Chart cumulative/daily toggle    | `components/charts/ViewModeFilter.tsx`                   |
 | Chart total/by-vault toggle      | `components/charts/SourceModeFilter.tsx`                 |
 | Vault holders (paginated)        | `components/morpho/VaultHolders.tsx`                     |
 | Vault transactions (paginated)   | `components/morpho/VaultTransactions.tsx`                |
-| Holders API (V1/V2)              | `app/api/vaults/[id]/holders/route.ts`                   |
-| Transactions API                 | `app/api/vaults/[id]/transactions/route.ts`              |
-| Multisig Safe UI + queue         | `app/safe/`, `components/safe/*`                          |
-| Safe config + Protocol Kit       | `lib/safe/config.ts`, `lib/safe/protocol-kit-client.ts`  |
-| Safe pending store (localStorage)| `lib/safe/pending-store.ts`, `lib/safe/queue-vault-write.ts` |
-| Safe Transaction Service         | `lib/safe/transaction-service.ts`, `lib/safe/service-sync.ts` |
-| Safe API rate limit (client)     | `lib/safe/transaction-service-rate-limit.ts`             |
-| Safe Apps SDK                    | `lib/safe/safe-apps-context.tsx`, `public/manifest.json` |
-| Safe vault write routing         | `lib/safe/vault-role-match.ts`, `lib/safe/build-vault-calldata.ts` |
-| Safe calldata preview            | `lib/safe/decode-vault-calldata-preview.ts`              |
-| Safe post-execute refetch        | `lib/safe/refetch-vault-after-safe-execute.ts`           |
-| Safe on-chain info API           | `app/api/safe/[address]/info/route.ts`, `lib/safe/onchain-reads.ts` |
+| Holders API (V1/V2)              | `src/app/api/vaults/[id]/holders/route.ts`                   |
+| Transactions API                 | `src/app/api/vaults/[id]/transactions/route.ts`              |
+| Wallet role checks for writes    | `lib/vault/write-destination.ts`                         |
 
 ---
 
-## 13. Multisig Safe (Curator)
+## 13. Multisig Safe (removed)
 
-`/safe` manages Allocator and Sentinel Safes on Base. Default tab: `/safe/allocator`. Under
-top-nav **Curator**: Curator tools → Multisig Safe.
+There is no Safe workspace, Safe Transaction Service client, or `@safe-global` package. Vault writes are signed by the connected wallet through `useVaultWrite`. That wallet must hold the on-chain role (allocator, sentinel, or curator). Role checks live in `lib/vault/write-destination.ts`.
 
-### 13.1 Role Safes (`lib/safe/config.ts`)
+`/safe` and `/curator/safe` redirect to `/curator`. Do not re-add `lib/safe/`, `src/app/safe/`, `components/safe/`, `src/app/api/safe/`, or `NEXT_PUBLIC_SAFE_API_KEY`.
 
-| Role | Purpose |
-| ---- | ------- |
-| Owner | Owner multisig |
-| Curator | Curator multisig |
-| Allocator | Vault rebalances queued here |
-| Sentinel | Cap decreases + deallocations queued here |
-
-Workspace link: the Safe on `app.safe.global` (`lib/safe/links.ts`).
-
-### 13.2 Transaction flow
-
-1. **Queue** — From a vault **Allocation** or **Sentinel** tab, use the tx
-   preview dialog. When governance lists the Allocator or Sentinel Safe as
-   the vault role holder, the dialog is **Safe-only** (`vault-role-match.ts`).
-   Queue builds a Safe meta-tx via Protocol Kit (RPC) and stores it in
-   **browser localStorage** (`pending-store.ts`). With `NEXT_PUBLIC_SAFE_API_KEY`
-   and a connected proposer wallet, auto-share also signs EIP-712 and proposes
-   to the Transaction Service; Safe App embed uses `sdk.txs.send` instead.
-2. **Sign** — On `/safe/[role]`, connect a **Safe owner** hot wallet in
-   the topbar. **Sign (EIP-712)** adds owner signatures locally. Sign, Share and
-   auto-share rebuild the Safe tx from its stored fields and check it hashes to
-   the stored `safeTxHash` **before** signing — a service-imported row carries
-   the service's hash next to separate `to`/`data`, and the owner reads a
-   preview decoded from `data`.
-3. **Execute** — Once signatures ≥ threshold, **any connected wallet** may
-   **Execute on-chain** (`execTransaction` is permissionless); owners are only
-   required to **sign**. The **Safe address** calls the vault contract.
-   `executeSafePendingTransaction` returns `execTransaction` calldata that the
-   wagmi wallet sends with **`value: 0`** — never the inner tx's value, or the
-   executor pays for ETH the Safe sends out. It re-checks the on-chain threshold
-   and the Safe's ETH balance first (protocol-kit's own pre-checks). The row is
-   marked **executed only after the receipt succeeds**; a revert keeps it queued
-   (and its nonce reserved) with the hash linked. Then Curator refetches vault
-   risk, governance, pending, reallocations, overview, and the Safe header/assets
-   (`refetch-vault-after-safe-execute.ts` — matches query keys by address
-   **case-insensitively**; vault pages key on lowercase config addresses).
-   Wallet/chain/threshold errors surface on the row; a ref guard stops a
-   double-click from starting two executions.
-
-Export/import JSON shares proposals between owners/browsers.
-
-**Dual storage model** — localStorage is always the source of truth in Curator;
-Transaction Service is an optional sync layer:
-
-1. **Queue** always writes to localStorage first.
-2. **Auto-share** (when `NEXT_PUBLIC_SAFE_API_KEY` is set and a proposer wallet is
-   connected): signs EIP-712 and calls `proposeTransaction` via
-   `@safe-global/api-kit` (^5.x; same `proposeTransaction` / `confirmTransaction`
-   surface used by Allocation and Sentinel queue flows).
-3. **Safe App embed** (`CuratorSafeAppsProvider`): when opened inside
-   `app.safe.global`, queue can call `sdk.txs.send` after building the same
-   meta-tx locally; marks `serviceSynced`.
-4. **Sync from service** on `/safe/[role]` merges pending txs from the
-   Transaction Service into localStorage (signatures included).
-5. **Share with owners** on unsynced rows re-proposes to the service.
-6. **Sign** posts `confirmTransaction` to the service when `serviceSynced` is true.
-
-`public/manifest.json` uses `iconPath`: `favicon.svg` + CSP `frame-ancestors`
-allow Safe App listing. Env: `NEXT_PUBLIC_SAFE_API_KEY` (https://developer.safe.global).
-Free tier is **5 req/s** and **50K req/month** — Curator only calls the service on
-queue (propose), sign (confirm), share, and manual **Sync from service** (no polling);
-client serializes calls with ≥210ms spacing.
-
-### 13.3 API
-
-- `GET /api/safe/[address]/info` (configured Safes only, 404 otherwise; rate limited; same for `balances`) — owners, threshold, nonce, version, native
-  ETH balance (`ethBalance` raw string), and Transaction Service **proposers**
-  (delegates who can propose without being owners). Proposers require
-  `NEXT_PUBLIC_SAFE_API_KEY`; returns `proposersConfigured: false` when unset.
-  Cached ≤15s. Reads are one **multicall**, not four `eth_call`s.
-- `GET /api/safe/[address]/balances?tokens=0x…,0x…` — on-chain balances for the
-  curated token set (native ETH, USDC/WETH/cbBTC, every configured vault's
-  shares) plus any comma-separated extra addresses. One multicall; unknown
-  tokens also resolve `symbol`/`name`/`decimals` in the same batch and are
-  dropped if the reads fail. Cached ≤15s. There is **no** Safe Transaction
-  Service balances call — the free tier is 5 req/s and this route is on the
-  hot path.
-- `GET /api/safe/[address]/history` — executed multisig txs from the Transaction
-  Service (`getMultisigTransactions`, executed only). On-demand; same rate
-  limit. Requires `NEXT_PUBLIC_SAFE_API_KEY`.
-- `GET /api/safe/[address]/settings` — on-chain modules + guard
-  (`readSafeOnChainSettings`). Address book is client-only
-  (`lib/safe/address-book.ts`).
-
-### 13.3.1 Assets, send and receive
-
-`/safe/[role]` is five route segments — **Home** (`page.tsx`, owners/proposers/
-details), **Assets** (`assets/`), **Transactions** (`transactions/`, the queue),
-**History** (`history/`, executed txs), **Settings** (`settings/`, modules,
-guard, address book)
-— under a shared `layout.tsx` that renders `SafeAccountHeader` (chain-prefixed
-`base:0x…` address, copy, threshold, ETH balance, Send/Receive) and
-`SafeRoleSubnav`.
-
-- **Send from a Safe** is a normal Safe proposal: `buildSafeTransferCalldata`
-  emits a native value transfer or an ERC-20 `transfer`, `queueSafeTransfer`
-  wraps it via `queueSafeTransaction`, and it then follows the existing
-  queue → sign → execute path. Available on **all five roles** — a proposal
-  confers no privilege on its own. Operation is always `Call`, never
-  `DelegateCall`.
-- **Receive** shows a QR of the `base:`-prefixed address plus a direct
-  wallet → Safe transfer (`useSafeFunding`), which needs no signatures.
-- **Balances** are read on-chain only. A Safe can hold any token, so unknown
-  ones are added by address and persisted per role in localStorage
-  (`custom-token-store.ts`) — there is no indexer to enumerate them.
-- Safe amounts render with `SAFE_AMOUNT_DP` (6), not the app-wide default of 2:
-  an ETH gas float and share dust both round to `0.00` at two places.
-- Vault-share rows use the **vault name** as the symbol — several vaults share
-  an asset, so `USDC shares` cannot tell two balances apart.
-
-### 13.4 Key files
-
-| Concern | File |
-| ------- | ---- |
-| Queue any Safe tx | `lib/safe/queue-vault-write.ts` (`queueSafeTransaction`, `queueSafeBatch`) |
-| Queue from vault | `lib/safe/build-vault-calldata.ts` |
-| Queue a transfer | `lib/safe/queue-transfer.ts`, `build-transfer-calldata.ts` |
-| Token registry + balances | `lib/safe/tokens.ts`, `read-balances.ts`, `custom-token-store.ts` |
-| Assets / send / receive UI | `components/safe/SafeAssetsPanel.tsx`, `SafeSendDialog.tsx`, `SafeReceiveDialog.tsx`, `SafeModal.tsx` |
-| History / settings UI | `components/safe/SafeHistoryPanel.tsx`, `SafeSettingsPanel.tsx`, `lib/safe/address-book.ts` |
-| Safe page shell | `app/safe/[role]/layout.tsx`, `components/safe/SafeAccountHeader.tsx`, `SafeRoleSubnav.tsx` |
-| Fund a Safe from a wallet | `lib/hooks/useSafeFunding.ts` |
-| Calldata preview decode | `lib/safe/decode-vault-calldata-preview.ts` |
-| Post-execute refetch | `lib/safe/refetch-vault-after-safe-execute.ts` |
-| Sign / execute | `lib/safe/protocol-kit-client.ts` |
-| Transaction Service sync | `lib/safe/transaction-service.ts`, `lib/safe/service-sync.ts` |
-| API rate limit | `lib/safe/transaction-service-rate-limit.ts` |
-| Safe Apps SDK | `lib/safe/safe-apps-context.tsx`, `public/manifest.json` |
-| UI queue | `components/safe/SafeTransactionQueue.tsx` |
-| Hooks | `useSafeInfo`, `useSafeBalances`, `useSafePending`, `useSafeTransactionActions` |
-
-### 13.5 Do not regress
-
-- Rebuild Safe tx with stored nonce/gas before **sign and** execute; verify `safeTxHash`.
-- Execute drops owner signatures that do not recover to their signer (`verify-signature.ts`; contract and approved-hash signatures are left to the Safe), so one bad signature cannot make the threshold look met.
-- MultiSend batching also reads the Transaction Service at the on-chain nonce and refuses when that read fails or a proposal outside the batch has a later nonce.
-- Execute marks a row **executed** only when the receipt also carries the Safe's `ExecutionSuccess` for that `safeTxHash` (both layouts: v1.3.0 `txHash` in `data`, v1.4.1+ indexed in `topics[1]`) (`safeExecutionOutcome`, `lib/safe/execution-outcome.ts`). `ExecutionFailure` (inner revert caught because `safeTxGas` / `gasPrice` ≠ 0) spends the nonce: the row goes **stale** and the user is told nothing changed. With neither event for that hash (`unknown`) the row stays queued with the hash linked and the user is asked to check it — never reported as executed.
-- Sync from service never moves an executed / stale / cancelled row back into the queue (`isTerminalSafeStatus`): the service indexer lags execution.
-- The queue's count also drops signatures that do not recover to their signer (`signatureMatchesSigner`, checked async), the same rule execute applies.
-- Only **current owners'** signatures count toward the threshold — the queue's count and Execute button (`countOwnerSignatures`) and the execute pre-check (`getOwners()`). Execute readiness comes from that count, not the stored status.
-- Bundle import: a new row's role comes from `getSafeByAddress` (rows for Safes not in `lib/safe/config.ts` are skipped), status resets to `awaiting_signatures`, signatures are validated, and one malformed row is skipped (reported) instead of failing the import.
-- `fetchPendingMultisigTransactions` reads every page; pass the known on-chain nonce as `currentNonce` to save the service's own nonce read.
-- Safe App queue with a different `safeTxHash`: adopt it only with every field from the matching service row; with no match keep the local row and tell the user to sync. Batching refuses a nonce below the on-chain nonce.
-- Execute sends `value: 0`; mark executed only on a successful receipt.
-- DelegateCall hazards (`lib/safe/multisend.ts`, `safePendingWarnings`): a
-  DelegateCall to anything but a canonical Base MultiSend / MultiSendCallOnly,
-  or a nested DelegateCall inside a MultiSend, is shown in red and **blocked**
-  from sign/share/execute. `inferSafeTxSource` never labels a DelegateCall as a
-  transfer or vault write. MultiSend batches get a per-call decoded preview.
-- Vault `multicall` / `submit` inner calls the Vault V2 ABI cannot decode are
-  kept in the preview (ERC-20 calls named) and warned on the card — never
-  silently dropped.
-- A MultiSend batch must include the **last** queued nonce for that Safe
-  (`prepareSafeBatchSelection(txs, queue)`): folding N rows into one nonce
-  frees N−1 nonces and would strand any later signed proposal forever.
-- Bundle import merges signatures into a proposal already held locally
-  (union by signer) instead of overwriting it, and drops any imported
-  `simulationWarning` (only Curator writes that, at queue time).
-- Send's address-book upsert passes an empty label, which keeps an existing
-  saved label (`upsertAddressBookEntry`).
-- Safe Receive shows Confirmed only for a successful receipt; Failed otherwise.
-- V2 calldata: deallocates before allocates in multicall batches.
-- Cap preview amounts use asset display decimals (`formatCapRawAmount` in
-  `allocation-display.ts`), not zero decimal places.
-- localStorage remains authoritative; Transaction Service sync is additive.
-- Do not drop export/import when adding service features.
-- Queue cards always show a tx preview — stored preview or decoded vault calldata.
-- A `transfer` source must not resolve to a vault link: an ERC-20 share transfer
-  targets the vault contract but is not a vault operation
-  (`resolveVaultAddressFromPending`).
-- `initSafeProtocolKit` caches only the **read-only** kit (fixed Base RPC, so it
-  cannot go stale); a failed init must be evicted or every later call replays
-  the error. Never cache a signer-bound kit — it captures the wallet's chain id
-  at init and would sign for the wrong chain after a network switch.
-- Dialogs that carry a preselection (`SafeSendDialog`) must mount only while
-  open. Left mounted, `useState(initialToken)` keeps the first mount's value and
-  every later launch preselects the wrong asset.
-- Post-queue redirects go to `/safe/[role]/transactions`, not `/safe/[role]`.
-- Next Safe nonce comes from on-chain **plus** queued local proposals
-  (`resolveNextSafeNonce`) so two queued txs cannot share a nonce.
-- Sign/execute use the AppKit/wagmi provider and switch to Base first.
-- Over-allocated rebalance plans fail closed (do not trim then submit).
-- `queueSafeTransaction` eth_calls the inner tx **from the Safe** before
-  queueing (`checkSafeCallBeforeQueue`, `lib/safe/simulate-safe-call.ts`) so a
-  call that would revert (stale cap, wrong role, insufficient balance) is never
-  signed. The simulation sees today's state, not the state after proposals
-  queued ahead execute, so with any unexecuted proposal queued for that Safe a
-  revert is stored as `simulationWarning` (shown on the card, not blocking)
-  instead of refusing — nonce N funding the Safe and N+1 spending it must
-  still queue (`safeCallRevertOutcome`). "Queued ahead" counts local and Transaction Service rows **at or above the on-chain nonce**, once per `safeTxHash` (`countDistinctQueuedProposals`) — a proposal made in another browser lives only on the service until a manual sync, and a local row another client already executed is stale and must not turn a dead call into a warning. Read only after a revert; a failed service read uses local rows, a failed nonce read keeps every row. Only a revert blocks; an RPC failure does not (an emergency sentinel
-  proposal must not depend on a flaky RPC). MultiSend batches are DelegateCalls
-  and are not simulated here; the Allocation rebalance path already simulates
-  as the Safe (`simulateVaultRebalance`).
-- Sentinel deallocate requires booked `allocation(id)` and market params
-  (`data` is never `0x` for a Blue market).
+Activity (`GET /api/vaults/[id]/activity`) is Morpho allocation transactions plus pending governance submits. It does not load executed governance from a Safe history.
 
 ---
 
@@ -1714,7 +1523,7 @@ future retired themes.
 ### 16.2 Global compactness
 
 The density that used to be scoped to the Y2K theme is now applied to every
-theme through global CSS in `app/globals.css`:
+theme through global CSS in `src/app/globals.css`:
 
 - `html { font-size: 13.5px }` — intentionally smaller than shadcn's default
   16px, intentionally larger than the old Y2K `12.5px`. Tweak this single
@@ -1833,18 +1642,13 @@ substantive changes, run `npm test`, `npm run lint`, and `npm run build`.
 
 Tests live next to the code as `lib/**/*.test.ts` (not under `__tests__/`), and
 cover pure logic only. Do not call wagmi hooks from tests; mock React Query
-hooks at module level. Tests must never hit the network — the Safe token tests
-assert declared decimals are *plausible*, and on-chain agreement is verified
-out of band, not in CI.
+hooks at module level. Tests must never hit the network. On-chain agreement is
+verified out of band, not in CI.
 
 Existing suites worth extending: `lib/utils/rate-limit.test.ts` (Vercel client
-IP, ignored forwarding headers), `lib/safe/*.test.ts`
-(transfer calldata, token registry, calldata preview decoding),
-`lib/config/vaults.test.ts`.
+IP, ignored forwarding headers), `lib/config/vaults.test.ts`.
 
-Also covered: `lib/safe/multisend.test.ts` (DelegateCall hazards, MultiSend
-decode), `lib/safe/pending-store.test.ts` (import signature merge),
-`lib/safe/address-book.test.ts`, `lib/morpho/morpho-app-links.test.ts`
+Also covered: `lib/morpho/morpho-app-links.test.ts`
 (return-path open redirect), `lib/morpho/cap-decrease-input.test.ts`,
 `lib/onchain/v2-rebalance-plan.test.ts` (idle re-anchor, % rounding),
 `lib/utils/error-handler.test.ts`,
@@ -1853,8 +1657,7 @@ decode), `lib/safe/pending-store.test.ts` (import signature merge),
 `lib/onchain/allocation-dust.test.ts`,
 `lib/morpho/oracle-display.test.ts`, `oracle-decode.server.test.ts` (meta oracle
 active source), `market-activity-math.test.ts` (collateral at risk, V2 vault
-allocation via adapters), `vault-activity.test.ts` (Safe/MultiSend governance
-decode, roles, adapter summary).
+allocation via adapters), `vault-activity.test.ts` (roles, pending match, adapter summary).
 
 Still uncovered and high value: `lib/morpho/tx-preview.ts`.
 
@@ -1865,7 +1668,7 @@ Still uncovered and high value: `lib/morpho/tx-preview.ts`.
 Create-market UI was removed from this dashboard. Use Morpho’s curator UI:
 https://curator.morpho.org/markets/create
 
-Hub still links those Morpho pages (`app/curator/page.tsx`). Markets browse stays
+Hub still links those Morpho pages (`src/app/curator/page.tsx`). Markets browse stays
 at `/markets`. Old `/markets/create` and `/markets/positions` redirect to `/markets`.
 
 ---
@@ -1875,6 +1678,6 @@ list/filters (§5), caps/adapters display, V2 idData/Sentinel (§3.2, §4.2), tx
 preview, client fetch/cache (§4.3), app/API route paths (§2, §4.7, `next.config.ts`
 redirects), Morpho GraphQL field names (§4.4.1), Curator markets browser (§4.7),
 vault list/sidebar (§4.3.1), vault overview/history (share price in §4.4), risk scoring (§4.5), V2 idle/Blue display (§3.2.1), pending/emergency
-tabs, wallet stack, Multisig Safe (§13), formatting, CCTP status (§14 removed), global
-density (§16), brain/MCP (`docs/brain/`), or add a new vault interaction, update Sections 3–6, 4.2–4.7, 9–10,
-13–14, 16–18 accordingly, and append `docs/brain/CHANGELOG.md`._
+tabs, wallet stack, Safe removal (§13), formatting, CCTP status (§14 removed), global
+density (§16), brain/MCP (`docs/`), or add a new vault interaction, update Sections 3–6, 4.2–4.7, 9–10,
+13–14, 16–18 accordingly, and append `docs/CHANGELOG.md`._

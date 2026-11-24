@@ -236,7 +236,7 @@ v2-only: `depositToVaultV2` / `withdrawFromVaultV2` / `redeemFromVaultV2` / `for
 ## Morpho GraphQL & API routes
 
 **Endpoint:** `https://api.morpho.org/graphql`  
-**Deprecation:** Morpho shuts down this GraphQL endpoint on **January 29, 2027**. The REST migration plan (endpoint map, file-by-file, gaps) is in `docs/morpho-rest-migration.md`.  
+**Deprecation:** Morpho shuts down this GraphQL endpoint on **January 29, 2027**.  
 **Docs:** https://docs.morpho.org/tools/offchain/api/morpho-vaults/
 
 ### V2 complete route (`src/app/api/vault/v2/[address]/complete/route.ts`)
@@ -581,7 +581,7 @@ npm test         # Vitest unit tests (src/**/*.test.ts)
 npm start        # Production server
 ```
 
-There is no GitHub Actions workflow. `wagmi.ts` requires `NEXT_PUBLIC_ALCHEMY_API_KEY` and `NEXT_PUBLIC_WALLETCONNECT_PROJECT_ID` at module load, and those keys stay in local `.env` / Vercel. Production build is local before push, and on Vercel. Node is `24.22.3` (`package.json` `engines`). Set the same version on Vercel.
+There is no GitHub Actions workflow. `wagmi.ts` requires `NEXT_PUBLIC_ALCHEMY_API_KEY` and `NEXT_PUBLIC_WALLETCONNECT_PROJECT_ID` at module load, and those keys stay in local `.env` / Vercel. Production build is local before push, and on Vercel. Node is 26 (`package.json` `engines` `26.x`). Set the same version on Vercel.
 
 ### Turbopack chunk error
 

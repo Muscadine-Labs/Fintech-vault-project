@@ -4,7 +4,7 @@ Student repo with copies of two upstream projects (`app` and `curator`). It is a
 
 ## What's in this repo
 
-Two independent Next.js + TypeScript apps for curated Morpho V2 vaults on Base (chain id 8453). They have no shared code and no root `package.json`. Run `npm install`, `npm run dev`, `npm run lint` and `npm run build` inside each folder. Use Node.js 24.
+Two independent Next.js + TypeScript apps for curated Morpho V2 vaults on Base (chain id 8453). They have no shared code and no root `package.json`. Run `npm install`, `npm run dev`, `npm run lint` and `npm run build` inside each folder. Use Node.js 26.
 
 | Folder | What it is | Port | Own docs |
 | --- | --- | --- | --- |
@@ -18,7 +18,7 @@ Read the folder's own `CLAUDE.md` before changing code there. It holds the archi
 ## Things to know
 
 - **Student setup:** vault addresses go in `app/src/lib/vaults.ts` and `curator/src/lib/config/vaults.ts`, and the two lists must match. Curator writes are signed by the connected wallet that holds the on-chain role. Branding is `APP_NAME` in `app/src/lib/constants.ts`. `USER-GUIDE.md` covers setup, env vars and Vercel deploys.
-- **Node version:** upstream runs Node 26; this template stays on Node 24. When syncing, keep `engines.node` at `24.x` and `@types/node` on 24.x in both `package.json` and `package-lock.json`.
+- **Node version:** Node 26, same as upstream (`engines.node` `26.x`, `@types/node` 26.x).
 - **Env vars:** copy each `.env.example` to `.env.local`. The app needs an Alchemy key and a Reown (WalletConnect) project ID. Never commit keys.
 - **Vercel:** deploy as two projects, with Root Directory `app` and `curator`.
 - **Data:** vault data comes from the public Morpho GraphQL API (`https://api.morpho.org/graphql`). Only Morpho V2 vaults are supported.

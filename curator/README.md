@@ -4,7 +4,7 @@ Next.js dashboard for Morpho V2 vaults. Vault addresses, names, and types live i
 
 ## Quick Start (macOS)
 
-Prerequisites: [Node.js](https://nodejs.org/) **24** and [Git](https://git-scm.com/). Check with:
+Prerequisites: [Node.js](https://nodejs.org/) **26** and [Git](https://git-scm.com/). Check with:
 
 ```bash
 node -v

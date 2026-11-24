@@ -20,7 +20,7 @@ Vault writes in the curator are signed by the connected wallet. That wallet must
 
 ## 3. Run locally
 
-Use Node.js 24. Create an [Alchemy](https://www.alchemy.com/) key for Base and a [Reown](https://dashboard.reown.com/) project ID.
+Use Node.js 26. Create an [Alchemy](https://www.alchemy.com/) key for Base and a [Reown](https://dashboard.reown.com/) project ID.
 
 ```bash
 cp app/.env.example app/.env.local

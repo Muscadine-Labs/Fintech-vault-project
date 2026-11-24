@@ -1332,7 +1332,7 @@ npm run build
 npm test               # vitest run
 ```
 
-Node **24.22.3** (`engines` in `package.json`).
+Node **26.x** (`engines` in `package.json`; Vercel runs 26.x).
 
 ### Dependency pins
 

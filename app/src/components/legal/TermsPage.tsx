@@ -13,7 +13,7 @@ const TermsPage: React.FC = () => {
           <h1 className="text-4xl font-light text-[var(--foreground)] mb-4 font-serif border-b-2 border-[var(--border)] pb-4">
             Terms of Use
           </h1>
-          <p className="text-[var(--foreground-secondary)] italic mb-8">Last updated: November 2026</p>
+          <p className="text-[var(--foreground-secondary)] italic mb-8">Last updated: January 2027</p>
 
           <div className="bg-[var(--surface)] border border-[var(--border)] p-6 mb-8 rounded-sm">
             <p className="text-[var(--foreground)] font-semibold">
@@ -59,7 +59,7 @@ const TermsPage: React.FC = () => {
               <li>Yields are variable and not guaranteed. Past APY is not a reliable indicator of future results.</li>
               <li>A withdrawal larger than the vault&apos;s free cash waits for market liquidity, or can be forced out early for a penalty the app shows before you confirm. You can lose some or all of what you deposit.</li>
               <li>Deposits can be limited by the vault&apos;s caps and, on some vaults, by an allow-list the app does not check.</li>
-              <li>The curator can change markets, caps and other settings within the vault&apos;s on-chain rules. Many changes wait out a timelock first.</li>
+              <li>The curator can change markets, caps and other settings within the vault&apos;s on-chain rules. Many changes wait out a timelock first, and the app lists pending ones.</li>
             </ul>
           </section>
 

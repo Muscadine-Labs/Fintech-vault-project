@@ -13,7 +13,7 @@ const LegalPage: React.FC = () => {
           <h1 className="text-4xl font-light text-[var(--foreground)] mb-4 font-serif border-b-2 border-[var(--border)] pb-4">
             Legal Disclaimer
           </h1>
-          <p className="text-[var(--foreground-secondary)] italic mb-8">Last updated: November 2026</p>
+          <p className="text-[var(--foreground-secondary)] italic mb-8">Last updated: January 2027</p>
 
           <div className="bg-[var(--surface)] border border-[var(--border)] p-6 mb-8 rounded-sm">
             <p className="text-[var(--foreground)] font-semibold mb-2">

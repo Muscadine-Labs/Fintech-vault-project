@@ -9,7 +9,7 @@ const RiskPage: React.FC = () => {
           <h1 className="text-4xl font-light text-[var(--foreground)] mb-4 font-serif border-b-2 border-[var(--border)] pb-4">
             Risk
           </h1>
-          <p className="text-[var(--foreground-secondary)] italic mb-8">Last updated: November 2026</p>
+          <p className="text-[var(--foreground-secondary)] italic mb-8">Last updated: January 2027</p>
 
           <div className="bg-[var(--surface)] border border-[var(--border)] rounded-lg p-6 mb-8">
             <h2 className="text-xl font-light text-[var(--foreground)] mb-2 font-serif">Not a bank · Not advice</h2>

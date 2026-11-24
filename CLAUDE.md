@@ -18,6 +18,7 @@ Read the folder's own `CLAUDE.md` before changing code there. It holds the archi
 ## Things to know
 
 - **Student setup:** vault addresses go in `app/src/lib/vaults.ts` and `curator/src/lib/config/vaults.ts`, and the two lists must match. Curator writes are signed by the connected wallet that holds the on-chain role. Branding is `APP_NAME` in `app/src/lib/constants.ts`. `USER-GUIDE.md` covers setup, env vars and Vercel deploys.
+- **Node version:** upstream runs Node 26; this template stays on Node 24. When syncing, keep `engines.node` at `24.x` and `@types/node` on 24.x in both `package.json` and `package-lock.json`.
 - **Env vars:** copy each `.env.example` to `.env.local`. The app needs an Alchemy key and a Reown (WalletConnect) project ID. Never commit keys.
 - **Vercel:** deploy as two projects, with Root Directory `app` and `curator`.
 - **Data:** vault data comes from the public Morpho GraphQL API (`https://api.morpho.org/graphql`). Only Morpho V2 vaults are supported.
@@ -32,8 +33,8 @@ There are three upstreams. The template repo https://github.com/Muscadine-Labs/F
 | Folder | Upstream | Branch | Last synced commit |
 | --- | --- | --- | --- |
 | root files | https://github.com/Muscadine-Labs/Fintech-vault-project | `main` | none recorded yet. On the first sync, compare the root files against the template's current `main`, then record its SHA and date here. |
-| `app` | https://github.com/Muscadine-Labs/app | `main` | `b2ed40480a39bab9dcf7ec1e679ffb3fa15eb4e4` (2026-11-15, PR #147) |
-| `curator` | https://github.com/Muscadine-Labs/curator | `main` | `99995fb0767b05329b232e8c66300d5fb65a8180` (2026-11-15, PR #85) |
+| `app` | https://github.com/Muscadine-Labs/app | `main` | `047e7a520fb85960828f713661f0e74fdd4b5877` (2026-11-24, PR #150) |
+| `curator` | https://github.com/Muscadine-Labs/curator | `main` | `fd5fac5a00c51d3ca9f918bad508ae48feedebea` (2026-11-24, PR #89) |
 
 The README has the same table. Update both together.
 

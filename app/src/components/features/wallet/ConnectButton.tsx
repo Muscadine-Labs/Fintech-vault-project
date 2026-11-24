@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useCallback, useState } from 'react';
-import { useAccount, useChainId } from 'wagmi';
+import { useConnection } from 'wagmi';
 import { useAppKit } from '@reown/appkit/react';
 import { useAdvisoryAgreement } from '@/contexts/AdvisoryAgreementContext';
 import { useWalletDisplayName } from '@/hooks/useWalletDisplayName';
@@ -9,6 +9,7 @@ import { useIsClient } from '@/hooks/useClientOnly';
 import { BASE_CHAIN_ID } from '@/lib/constants';
 import { ensureAppKitInit } from '@/lib/appkit-init';
 import { logger } from '@/lib/logger';
+import { preloadWalletSdks } from '@/lib/lazy-connectors';
 
 const buttonClassName =
   'inline-flex items-center justify-center px-3 py-1.5 text-sm gap-1.5 text-[var(--foreground)] transition-all duration-200 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-[var(--border)] rounded-md hover:bg-[var(--surface-hover)] active:bg-[var(--surface-active)] cursor-pointer';
@@ -40,8 +41,9 @@ function ConnectButtonReady() {
   const { isAccepted, openModal, shouldOpenWalletConnect, clearWalletConnectFlag } =
     useAdvisoryAgreement();
   const { open } = useAppKit();
-  const { address, isConnected } = useAccount();
-  const chainId = useChainId();
+  // The wallet's real chain. useChainId() only reports configured chains, so with a
+  // Base-only config it stays 8453 and the Wrong network button would never show.
+  const { address, isConnected, chainId } = useConnection();
   const isClient = useIsClient();
   const { displayName } = useWalletDisplayName(address);
 
@@ -75,6 +77,7 @@ function ConnectButtonReady() {
   ]);
 
   const handleConnectClick = () => {
+    preloadWalletSdks();
     if (!isAccepted) {
       openModal();
     } else {

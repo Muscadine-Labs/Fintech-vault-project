@@ -37,7 +37,7 @@ Comprehensive context for AI assistants and developers. This is the canonical �
 13. [Directory map](#directory-map)
 14. [UI / transaction UX](#ui--transaction-ux)
 15. [Wallet & balances](#wallet--balances)
-16. [Base App](#base-app)
+16. [Wallet UIs and app identity](#wallet-uis-and-app-identity)
 17. [Configuration & constants](#configuration--constants)
 18. [Development](#development)
 19. [Dependency constraints](#dependency-constraints)
@@ -69,9 +69,9 @@ npm run lint
 
 Never commit real keys. `.env.example` documents placeholders.
 
-`package.json` **`allowScripts`** allowlists native/postinstall scripts for `bufferutil`, `keccak`, `unrs-resolver`, `utf-8-validate`, `@reown/appkit`, and `fsevents` (transitive; WalletConnect `ws` + eslint-next resolver + AppKit version check + Vite file watching on macOS, dev only). Keep versions pinned to `package-lock.json`. Local npm 11.4 does not have `npm approve-scripts`; Vercel’s newer npm emits the pending-scripts warning without this field.
+`package.json` **`allowScripts`** allowlists the install scripts of `@reown/appkit` (AppKit version check) and `fsevents` (Vite file watching on macOS, dev only). `bufferutil`, `keccak` and `utf-8-validate` left with the WalletConnect ethereum-provider in the wagmi 3 / AppKit 2 upgrade. Keep versions pinned to `package-lock.json`. Local npm 11.4 does not have `npm approve-scripts`; Vercel’s newer npm emits the pending-scripts warning without this field.
 
-`package.json` **`overrides`** also pins patched transitive packages GitHub Dependabot flags (`axios`, `hono`, `js-yaml` 4.x, `socket.io-parser`, `brace-expansion` 1.x/5.x, `browserslist` 4.29.3, `decode-uri-component` 0.5.0). Do not drop those pins without checking Dependabot alerts on your repo.
+`package.json` **`overrides`** also pins patched transitive packages GitHub Dependabot flags (`axios`, `js-yaml` 4.x, `brace-expansion` 1.x/5.x, `browserslist` 4.29.6, `follow-redirects`, `ws`). Do not drop those pins without checking Dependabot alerts on your repo. Pins for packages that left the tree with the wagmi 3 / AppKit 2 upgrade (`uuid`, `hono`, `socket.io-parser`, `decode-uri-component`) were removed; the `qr` pin was removed too (nothing installs `qr`; AppKit 2 uses `qrcode`). `npm ls` reports `@x402/*` 2.27.0 (pinned by `@reown/appkit-utils`) as invalid for `@coinbase/cdp-sdk`'s optional `^2.29.0` peer, and `@solana/kit` 8.6.0 as invalid for `@solana-program/*`'s `^5.0` (both under `@base-org/account` → `@coinbase/cdp-sdk`); it is never bundled (`next.config.ts` aliases it to `src/lib/x402-stub.js`) and `.npmrc` `legacy-peer-deps=true` keeps `npm ci` passing — keep that file.
 
 ---
 
@@ -82,7 +82,7 @@ Never commit real keys. `.env.example` documents placeholders.
 | Framework | Next.js 16 (App Router) |
 | Bundler (dev/build) | Turbopack (`next dev --turbopack`, `next build --turbopack`) |
 | UI | React 19, Tailwind CSS 4 |
-| Wallet | wagmi **2.x**, Reown AppKit, viem 2 |
+| Wallet | wagmi **3.x**, Reown AppKit **2.x**, viem 2 |
 | Chain | Base only (`8453`) |
 | Server data | Next.js Route Handlers → Morpho GraphQL |
 | Client GraphQL | None — Morpho GraphQL is server-only via `fetchMorphoGraphQL()` |
@@ -163,7 +163,7 @@ All vault writes go through **`src/lib/transactionUtilsV2.ts`**. ERC-4626 ops an
 
 **Rule:** anything about the user's own money (position, deposit / withdraw amounts, share balance) comes from on-chain RPC. Vault-level data (deposits, TVL, APY, liquidity, token prices) and every chart come from APIs. Earned interest is Morpho `pnl`, with an activity-based fallback against the on-chain balance.
 
-**Token list and prices (any token):** the token list is each registry vault's own `asset()`, read on chain once per page load with its `decimals()` and `symbol()` (`readRegistryAssets` in `lib/registry-assets.ts`). `PriceContext` loads that list and prices it from `/api/prices?addresses=…`, which reads Morpho `assets(where: { address_in })` → `price { usd }` and `logoURI` (`lib/token-prices.ts`, cached 60s). Native ETH uses the WETH price. Learned tokens are registered in `lib/token-metadata.ts`, so `getAssetDecimalsForSymbol`, `findTokenBySymbol` and `getVaultLogo` (bundled logo, then Morpho logo from `cdn.morpho.org`, then the app icon) work for a token with no hardcoded entry. Adding a vault in a new token needs only the registry row. CoinGecko and the hardcoded USDC / cbBTC / WETH token list are gone. Resilience: each vault is read with `allowFailure`, a `bytes32` `symbol()` is decoded, and a failed or partial read is retried every 30s while `fallbackRegistryAssets` (merged into a partial read by `withFallbackAssets`, in prices and wallet balances; the wallet re-reads token balances when the asset list changes) (USDC / cbBTC / WETH matched by the registry label, plus WETH for ETH) stands in. With no Morpho price, a stablecoin is $1 and anything else is 0 (activity too). The wallet token list is tagged with its wallet, so a failed read after a switch never shows another wallet's tokens. The transact panel takes decimals from the vault's on-chain asset and re-applies its accounts when that read lands. Logos use `useTokenLogo` so a Morpho logo shows once it loads; only `https://cdn.morpho.org/` logos are kept. A registry label is an extra symbol only when no other token holds it. Reown AppKit analytics is off (the privacy page says no analytics).
+**Token list and prices (any token):** the token list is each registry vault's own `asset()`, read on chain once per page load with its `decimals()` and `symbol()` (`readRegistryAssets` in `lib/registry-assets.ts`). `PriceContext` loads that list and prices it from `/api/prices?addresses=…`, which reads Morpho `assets(where: { address_in })` → `price { usd }` and `logoURI` (`lib/token-prices.ts`, cached 60s). Native ETH uses the WETH price. Learned tokens are registered in `lib/token-metadata.ts`, so `getAssetDecimalsForSymbol`, `findTokenBySymbol` and `getVaultLogo` (bundled logo, then Morpho logo from `cdn.morpho.org`, then the app icon) work for a token with no hardcoded entry. Adding a vault in a new token needs only the registry row. CoinGecko and the hardcoded USDC / cbBTC / WETH token list are gone. Resilience: each vault is read with `allowFailure`, a `bytes32` `symbol()` is decoded, and a failed or partial read is retried every 30s while `fallbackRegistryAssets` (merged into a partial read by `withFallbackAssets`, in prices and wallet balances; the wallet re-reads token balances when the asset list changes) (USDC / cbBTC / WETH matched by the registry label, plus WETH for ETH) stands in. With no Morpho price, a stablecoin is $1 and anything else is 0 (activity too). The wallet token list is tagged with its wallet, so a failed read after a switch never shows another wallet's tokens. The transact panel takes decimals from the vault's on-chain asset and re-applies its accounts when that read lands. Logos use `useTokenLogo` so a Morpho logo shows once it loads; only `https://cdn.morpho.org/` logos are kept. A registry label is an extra symbol only when no other token holds it. Privacy settings are listed under **Wallet & balances → Privacy**; the privacy page covers Reown's mandatory connection events under Reown / WalletConnect.
 
 Share tokens use **18 decimals**; underlying assets use the decimals read from each vault asset on chain (USDC **6**, cbBTC **8**, WETH **18**).
 
@@ -236,6 +236,7 @@ v2-only: `depositToVaultV2` / `withdrawFromVaultV2` / `redeemFromVaultV2` / `for
 ## Morpho GraphQL & API routes
 
 **Endpoint:** `https://api.morpho.org/graphql`  
+**Deprecation:** Morpho shuts down this GraphQL endpoint on **January 29, 2027**. The REST migration plan (endpoint map, file-by-file, gaps) is in `docs/morpho-rest-migration.md`.  
 **Docs:** https://docs.morpho.org/tools/offchain/api/morpho-vaults/
 
 ### V2 complete route (`src/app/api/vault/v2/[address]/complete/route.ts`)
@@ -321,7 +322,7 @@ Morpho GraphQL is **server-only** (`fetchMorphoGraphQL()` in route handlers). Th
 
 **NavBar:** Dashboard → `/`, Vaults → `/vaults`. Settings: theme (light/dark/auto). Right sidebar (`LearnContent`) is Q&A links to Morpho docs (protocol, Vault V2, curator, Blue, Midnight).
 
-**App title:** metadata in `layout.tsx` uses **Vaults** (`APP_NAME` in `src/lib/constants.ts`) so Base.dev / Reown AppKit / WalletConnect match.
+**App title:** metadata in `layout.tsx` uses **Vaults** (`APP_NAME` in `src/lib/constants.ts`) so the page title and Reown AppKit / WalletConnect match.
 
 ---
 
@@ -438,7 +439,6 @@ Same Risk Framework / Morpho’s Disclaimer links appear in the **NavBar** dropd
 | Hook | File | Purpose |
 |------|------|---------|
 | `useVaultEarnedInterest` | `hooks/useVaultEarnedInterest.ts` | All-time earned interest for curated vaults |
-| `useClearStuckWalletUi` | `hooks/useClearStuckWalletUi.ts` | Clear leftover wallet overlays after the AppKit modal closes |
 | `useVaultDataFetch` | `hooks/useVaultDataFetch.ts` | Fetch/cache vault API data, list preloader |
 | `useClientOnly` | `hooks/useClientOnly.ts` | `useIsClient()`, `useUnixTimestamp()` — SSR-safe patterns |
 
@@ -522,13 +522,13 @@ src/
 - **Morpho positions:** `/api/user/morpho-positions` (v2); metadata from `/api/vault/v2/.../complete`
 - `refreshBalances`, `refreshBalancesWithPolling` after transactions
 
+**Privacy (no optional analytics or telemetry):** AppKit `features.analytics: false` (Reown still receives its mandatory `INITIALIZE` / `CONNECT_SUCCESS` events and wallet-list impressions, which cannot be turned off). `src/config/wagmi.ts` registers its own Base Account connector (smart wallet) with `preference: { telemetry: false }` so AppKit skips its default one, whose SDK sends telemetry to Coinbase by default, and its own Coinbase Wallet connector (`@coinbase/wallet-sdk`, id renamed to `coinbaseWallet` so AppKit lists it and does not add its own; `enableCoinbase` stays on). Both are wrapped in `lazyConnector` (`src/lib/lazy-connectors.ts`, `lazyBaseAccount` / `lazyCoinbaseWallet`): wagmi's mount-time `reconnect()` calls `getProvider()` on every configured connector, which would load each SDK (and its COOP `HEAD` request) on every page load. Until the user connects with it, or it was the last connector used and not disconnected, its `getProvider()` returns nothing and `isAuthorized()` is false; `disconnect()` and a disconnect from the wallet side (`onDisconnect`) are remembered (`<id>.disconnected`); `disconnect()` tolerates a provider without `disconnect`. The remembered disconnect is cleared only after a successful connect. `preloadWalletSdks()` fetches both SDK chunks when Connect is clicked (same-origin, starts no SDK) so the first connect's import does not sit between the click and the wallet popup. Tests: `__tests__/lazy-connectors.test.ts`. `@coinbase/wallet-sdk` is pinned to 4.4.0, which has no telemetry (4.3.x did); an `overrides` entry makes AppKit's `@reown/appkit-utils` use the same single copies of both SDKs. The `dev` / `build` / `start` scripts set `NEXT_TELEMETRY_DISABLED=1`, so Next.js build telemetry is off locally and on Vercel. AppKit's `--apkt-font-family` / `--w3m-font-family` are `inherit`: the modal is mounted under `<body>` and uses our self-hosted Figtree. Do not use `var(--font-…)` there (AppKit declares it on `:root`, where next/font's variable is undefined). Any custom value also stops AppKit preloading its fonts from `fonts.reown.com` on every page load. No analytics packages. Keep it that way: do not add an SDK or option that sends usage data unless it is required for the feature.
+
 ---
 
-## Base App
+## Wallet UIs and app identity
 
-Standard web app on Base — no Farcaster manifest, mini-app SDK, `base:app_id` tag, Base App WebView connector shortcut or ERC-8021 builder code. `APP_NAME` lives in `src/lib/constants.ts`; wagmi metadata uses `getAppUrl()` + `/favicon.svg`.
-
-Optional later: [Base Notifications API](https://docs.base.org/apps/technical-guides/base-notifications) (wallet-address based; no Farcaster).
+Plain web app on Base: no Base App / mini-app integration (no `base:app_id` meta tag, Base App WebView connect path or ERC-8021 builder code), no Farcaster manifest. `APP_NAME` lives in `src/lib/constants.ts`; AppKit `metadata` in `src/config/wagmi.ts` sets `url: getAppUrl()` and `icons: [appUrl + '/favicon.svg']`. Inside the Base App or any wallet browser, Connect opens Reown AppKit like everywhere else. Injected wallets appear through EIP-6963, except the Coinbase extension: our Coinbase connector shares its rdns (`com.coinbase.wallet`), so wagmi hides the announcement and the **Coinbase** row (Coinbase Wallet SDK) uses the extension when installed. **Base (formerly Coinbase Wallet)** is the Base Account smart wallet. Layout uses `dvh`. Do not CSS-elevate leftover AppKit dialog siblings.
 
 ---
 
@@ -610,11 +610,12 @@ Do not bump without checking compatibility:
 
 | Package | Constraint |
 |---------|------------|
-| `wagmi` | Stay on **2.x** — Reown AppKit requirement |
+| `wagmi` / `@wagmi/core` / `@wagmi/connectors` | **3.x / 3.x / 8.x**, pinned exact and matched in `overrides`. Bump together with Reown AppKit: AppKit 2.x peers `wagmi` / `@wagmi/core` ≥3 and `@wagmi/connectors` ≥8. wagmi 3 API names: `useConnection` (not `useAccount`), `useConnectors` (not `useConnect().connectors`), and `mutate` / `mutateAsync` on mutation hooks (`useConnect`, `useSwitchChain`, `useWriteContract`, `useSendTransaction`) instead of `connectAsync` / `switchChainAsync` / `writeContractAsync` / `sendTransactionAsync`; the old names are deprecated aliases. `useBalance` has no `formatted` field (use viem `formatUnits(value, decimals)`). |
+| `@reown/appkit` / `@reown/appkit-adapter-wagmi` | **2.x**, same version for both. Its Base Account, Coinbase Wallet and Safe connectors load SDKs that are optional peers of `@wagmi/connectors` 8 (a direct dep, `$` override). `@base-org/account` 2.6.0 and `@coinbase/wallet-sdk` 4.4.0 are direct deps; the `@reown/appkit-utils` override dedupes AppKit's nested copies onto them. Import connectors from their subpaths (`@wagmi/connectors/baseAccount`), not the barrel. |
 | `eslint` | Stay on **9.x** until `eslint-plugin-react` / `jsx-a11y` / `import` (bundled by `eslint-config-next` 16) accept ESLint 10 — their peer ranges stop at 9 and `npm ls` reports the tree invalid on 10 |
 | `ox` | Not a direct dependency (viem brings it). If you add it back, stay on **0.14.x** — `ox@1` is a breaking rewrite — and match the version viem uses: check `npm view viem@<version> dependencies.ox` and bump `ox` with it, or the Turbopack build fails with missing ox exports (`AccountConfig`). |
 | `valtio` | Keep a **root** `valtio` (2.x) — Reown AppKit / WalletConnect must resolve `valtio/vanilla` under Turbopack |
-| `@morpho-org/*-wagmi` 4.x | Often requires wagmi 3 |
+| `@morpho-org/*-wagmi` 4.x | Not used; check its wagmi peer range before adding |
 
 ---
 
@@ -645,7 +646,7 @@ Do not bump without checking compatibility:
 1. **Multi-chain vaults** — Extend beyond Base to **Ethereum** and **Hyperliquid**: multi-chain `VAULTS` entries, RPC/wagmi chains, Morpho GraphQL `chainId` on API routes, explorer Network filter (today only Base is real; “All” is forward-compatible).
 ### Technical (optional)
 
-3. **`@morpho-org/morpho-sdk` for v2** — optional for Permit/Permit2 and **in-kind redemption** (`inKindRedeem`). Peer dep is viem only; does not require wagmi 3.
+3. **`@morpho-org/morpho-sdk` for v2** — optional for Permit/Permit2 and **in-kind redemption** (`inKindRedeem`). Peer dep is viem only.
 4. **`supportSignature: true`** — Permit/Permit2 to skip extra approval txs.
 5. **V2 vault-to-vault transfers** — Not implemented; would need withdraw + deposit coordination.
 6. **In-kind redemption UI** — When force withdraw cannot cover (no free market cash), preview and transfer Blue supply positions via SDK `inKindRedeem`. Do not replace force withdraw with `vaultExitBundlesV1ForceWithdrawVaultV2`.
